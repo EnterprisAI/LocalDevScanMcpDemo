@@ -1,28 +1,29 @@
 spring:
+  application:
+    name: LocalDevScanMcpDemo
   ai:
-    mcp:
-      server:
-        name: sonarqube-github-mcp-server
-        version: 1.0.0
-        stdio: false
-
     openai:
-      # Default: real OpenAI API (gpt-4o, 128k context — recommended for PR analysis)
-      # For GitHub Models: set OPENAI_BASE_URL=https://models.inference.ai.azure.com
-      #                        OPENAI_COMPLETIONS_PATH=/chat/completions
-      #                        OPENAI_API_KEY=<your GitHub PAT>
-      #                        OPENAI_MODEL=gpt-4o-mini
       base-url: ${OPENAI_BASE_URL:https://api.openai.com}
       api-key: ${OPENAI_API_KEY:${GITHUB_TOKEN:}}
       chat:
         completions-path: ${OPENAI_COMPLETIONS_PATH:/v1/chat/completions}
         options:
-          model: ${OPENAI_MODEL:gpt-4o}
+          model: ${OPENAI_MODEL:models/gemini-2.5-flash-lite}
+    mcp:
+      server:
+        name: local-dev-scan-mcp
+        version: 1.0.0
+        type: SYNC
 
 sonarqube:
   url: ${SONARQUBE_URL:https://sonarcloud.io}
   token: ${SONARQUBE_TOKEN:}
   org: ${SONARQUBE_ORG:}
+
+snyk:
+  token: ${SNYK_TOKEN:}
+  org-id: ${SNYK_ORG_ID:}
+  docker-image: ${SNYK_DOCKER_IMAGE:snyk/snyk:maven}
 
 github:
   token: ${GITHUB_TOKEN:}
@@ -30,8 +31,3 @@ github:
 
 server:
   port: 8080
-
-logging:
-  level:
-    root: INFO
-    com.example.mcp: DEBUG
