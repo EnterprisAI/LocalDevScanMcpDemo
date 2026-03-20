@@ -1,0 +1,53 @@
+version: '3.8'
+
+# Starts two infrastructure services needed by SonarqubeGithubMcpDemo:
+#   1. SonarQube       — code quality platform  (port 9000)
+#   2. GitHub MCP Server — GitHub API as MCP tools (port 3000)
+#
+# Usage:
+#   set GITHUB_TOKEN=ghp_your_token   (Windows CMD)
+#   docker-compose up -d
+#
+# Then run the Spring Boot app separately (see README / GITHUB_MCP_INTEGRATION.md)
+
+services:
+
+  sonarqube:
+    image: sonarqube:community
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  github-mcp-server:
+    image: ghcr.io/github/github-mcp-server:latest
+    container_name: github-mcp-server
+    ports:
+      - "3000:3000"
+    # Run in HTTP mode so Spring AI MCP client can connect via SSE
+    # The GitHub MCP server uses subcommand: http --host 0.0.0.0 --port 3000
+    command: ["http", "--port", "3000"]
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:

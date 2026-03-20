@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\" && ./gradlew compileJava --no-daemon 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\" && gradle compileJava --no-daemon 2>&1)",
+      "Bash(gradle --version)",
+      "Bash(docker pull:*)",
+      "Bash(docker run:*)",
+      "Bash(curl -s http://localhost:9000/api/system/status 2>&1)",
+      "Bash(curl -s -X POST \"http://localhost:9000/api/users/change_password\" \\\\\n  -u admin:admin \\\\\n  -d \"login=admin&previousPassword=admin&password=Admin@1234\" 2>&1)",
+      "Bash(curl -s -X POST \"http://localhost:9000/api/users/change_password\" \\\\\n  -u admin:admin \\\\\n  -d \"login=admin&previousPassword=admin&password=Admin@123456\" 2>&1)",
+      "Bash(curl -s -X POST \"http://localhost:9000/api/user_tokens/generate\" \\\\\n  -u admin:Admin@123456 \\\\\n  -d \"name=mcp-demo-token&type=USER_TOKEN\" 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\" && gradle sonar -Dsonar.host.url=http://localhost:9000 -Dsonar.token=squ_16c95e0325227fb5a46369b1f5f5c2d1afc0752b -Dsonar.projectKey=sonarqube-mcp-demo -Dsonar.projectName=\"SonarQube MCP Demo\" --no-daemon 2>&1)",
+      "Bash(curl -s \"http://localhost:9000/api/projects/search\" -u admin:Admin@123456 | python -m json.tool 2>&1)",
+      "Bash(echo \"=== getProjectMetrics ===\" && curl -s \"http://localhost:9000/api/measures/component?component=sonarqube-mcp-demo&metricKeys=bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,ncloc,sqale_rating,reliability_rating,security_rating,alert_status\" -H \"Authorization: Basic $\\(echo -n 'squ_16c95e0325227fb5a46369b1f5f5c2d1afc0752b:' | base64\\)\" | python -m json.tool 2>&1)",
+      "Bash(echo \"=== getQualityGateStatus ===\" && curl -s \"http://localhost:9000/api/qualitygates/project_status?projectKey=sonarqube-mcp-demo\" -H \"Authorization: Basic $\\(echo -n 'squ_16c95e0325227fb5a46369b1f5f5c2d1afc0752b:' | base64\\)\" | python -m json.tool && echo \"\" && echo \"=== searchIssues \\(all\\) ===\" && curl -s \"http://localhost:9000/api/issues/search?componentKeys=sonarqube-mcp-demo&ps=20\" -H \"Authorization: Basic $\\(echo -n 'squ_16c95e0325227fb5a46369b1f5f5c2d1afc0752b:' | base64\\)\" | python -m json.tool 2>&1)",
+      "Bash(docker ps:*)",
+      "Bash(cd \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\" && ./gradlew build -x test --no-daemon 2>&1)",
+      "Bash(sleep 15 && curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/actuator/health 2>/dev/null || curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/ 2>/dev/null; echo \"\" && tail -20 \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\\\\app.log\" 2>&1)",
+      "Bash(curl -s -X POST http://localhost:8080/chat -H \"Content-Type: text/plain\" -d \"What projects are available in SonarQube?\" 2>&1)",
+      "Bash(pkill -f \"SonarqubeMcpDemo\" 2>&1; echo \"stopped\")",
+      "Bash(taskkill /F /FI \"WINDOWTITLE eq *SonarqubeMcpDemo*\" 2>&1; taskkill /F /FI \"IMAGENAME eq java.exe\" 2>&1; echo \"done\")",
+      "Bash(cmd /c \"taskkill /F /FI \\\\\"IMAGENAME eq java.exe\\\\\"\" 2>&1)",
+      "Bash(cmd /c \"taskkill /F /IM java.exe\" 2>&1)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/chat 2>&1)",
+      "Bash(cmd /c \"netstat -ano | findstr :8080\" 2>&1)",
+      "Bash(netstat -ano 2>&1 | grep \":8080\")",
+      "Bash(kill -9 31364 2>&1 && echo \"killed\" && sleep 2 && curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/ 2>&1)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8080/ 2>&1)",
+      "Bash(wmic process:*)",
+      "Bash(cd \"C:\\\\Users\\\\Deepak\\\\Code\\\\SonarQubeMCP\\\\SonarqubeMcpDemo\\\\SonarqubeMcpDemo\" && ./gradlew build -x test --no-daemon 2>&1 | tail -5)",
+      "Bash(sleep 12 && curl -s -o /dev/null -w \"HTTP %{http_code}\" http://localhost:8080/ 2>&1)",
+      "Bash(echo \"=== TEST 1: List Projects ===\" && curl -s -X POST http://localhost:8080/chat -H \"Content-Type: text/plain\" -d \"What projects are available in SonarQube?\" 2>&1)",
+      "Bash(echo \"=== TEST 2: Project Metrics ===\" && curl -s -X POST http://localhost:8080/chat -H \"Content-Type: text/plain\" -d \"What are the quality metrics for sonarqube-mcp-demo?\" 2>&1)"
+    ]
+  }
+}
