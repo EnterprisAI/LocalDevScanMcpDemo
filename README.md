@@ -122,7 +122,15 @@ curl -X POST http://localhost:8080/apply-fixes \
 bash hooks/install-hooks.sh /path/to/your/repo
 ```
 
-From now on, every `git push` in that repo will automatically scan and offer to apply fixes before pushing.
+From now on, every `git push` in that repo scans automatically and prompts:
+
+- **[r] Review per fix** — steps through each fix one by one, shows a coloured diff (`-` original / `+` suggested), and lets you **accept**, **skip**, **edit in `$EDITOR`**, or **apply all remaining**
+- **[a] Apply all** — applies every suggestion without review
+- **[s] Show JSON** — prints the full report, then asks whether to push
+- **[p] Push anyway** — proceeds with known issues
+- **[x] Cancel** — aborts the push
+
+After any fixes are applied the push is blocked so you can review the patched files before re-pushing.
 
 ---
 

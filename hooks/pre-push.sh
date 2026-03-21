@@ -2,13 +2,13 @@
 # =============================================================================
 # Pre-push hook: Local Code Quality Gate
 # =============================================================================
-# Install: cp hooks/pre-push.sh .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# Install: bash hooks/install-hooks.sh /path/to/your/repo
 #
 # This hook runs before every `git push`. It:
 #   1. Calls the LocalDevScanMcpDemo server to scan this project
 #   2. Displays LLM-generated fix suggestions
-#   3. Optionally applies all fixes automatically
-#   4. Blocks the push if issues are found (unless --no-verify is used)
+#   3. Lets you review each fix individually, apply all, or push anyway
+#   4. Blocks the push so you can review applied changes before re-pushing
 # =============================================================================
 
 MCP_SERVER="${MCP_SERVER_URL:-http://localhost:8080}"
@@ -16,9 +16,14 @@ PROJECT_PATH="$(pwd)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-$(basename "$PROJECT_PATH")}"
 RESULTS_FILE="/tmp/scan-results-$$.json"
+APPLY_FILE="/tmp/apply-request-$$.json"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; NC='\033[0m'
+RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+cleanup() { rm -f "$RESULTS_FILE" "$APPLY_FILE" /tmp/apply-result-$$.json; }
+trap cleanup EXIT
 
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -31,9 +36,9 @@ echo -e "  Server  : ${MCP_SERVER}"
 echo ""
 
 # ── Check server is running ───────────────────────────────────────────────────
-if ! curl -s -o /dev/null --connect-timeout 3 "${MCP_SERVER}/webhook/github"; then
+if ! curl -s -o /dev/null --connect-timeout 3 "${MCP_SERVER}/scan-local" 2>/dev/null; then
     echo -e "${YELLOW}⚠  LocalDevScanMcpDemo server is not running at ${MCP_SERVER}${NC}"
-    echo -e "   Start it with: java -jar LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar"
+    echo -e "   Start it with: ./run.sh"
     echo -e "   Skipping scan and allowing push."
     echo ""
     exit 0
@@ -51,106 +56,253 @@ HTTP_STATUS=$(curl -s -o "$RESULTS_FILE" -w "%{http_code}" \
         \"projectPath\": \"${PROJECT_PATH}\",
         \"sonarProjectKey\": \"${SONAR_PROJECT_KEY}\",
         \"branch\": \"${BRANCH}\",
-        \"runSonarScan\": true,
+        \"runSonarScan\": false,
         \"runSnykScan\": true
     }")
 
 if [ "$HTTP_STATUS" != "200" ]; then
     echo -e "${YELLOW}⚠  Scan returned HTTP ${HTTP_STATUS}. Allowing push.${NC}"
     cat "$RESULTS_FILE"
-    rm -f "$RESULTS_FILE"
     exit 0
 fi
 
 # ── Parse results ─────────────────────────────────────────────────────────────
-TOTAL=$(cat "$RESULTS_FILE" | grep -o '"totalIssues":[0-9]*' | cut -d: -f2)
+TOTAL=$(grep -o '"totalIssues":[0-9]*' "$RESULTS_FILE" | cut -d: -f2)
 TOTAL="${TOTAL:-0}"
 
 if [ "$TOTAL" -eq "0" ]; then
     echo -e "${GREEN}✅ No issues found! Push proceeding.${NC}"
-    rm -f "$RESULTS_FILE"
     exit 0
 fi
 
-# ── Display issues ────────────────────────────────────────────────────────────
-echo -e "${RED}⚠  Found ${TOTAL} issue(s) in your code:${NC}"
+# ── Display summary ───────────────────────────────────────────────────────────
+echo -e "${RED}${BOLD}⚠  Found ${TOTAL} issue(s) in your code:${NC}"
 echo ""
 
-# Pretty-print issues using node if available, otherwise raw JSON
 if command -v node &>/dev/null; then
     node -e "
 const data = require('$RESULTS_FILE');
 data.fixes.forEach((f, i) => {
-    const icon = f.severity === 'CRITICAL' || f.severity === 'HIGH' ? '🔴' :
-                 f.severity === 'MAJOR' ? '🟠' : '🟡';
-    console.log(\`  \${icon} [\${f.severity}] [\${f.source.toUpperCase()}] \${f.file}:\${f.startLine}\`);
-    console.log(\`     Issue: \${f.issue}\`);
-    console.log(\`     Fix  : \${f.explanation}\`);
+    const icon = f.severity === 'CRITICAL' ? '🔴' :
+                 f.severity === 'HIGH'     ? '🔴' :
+                 f.severity === 'MAJOR'    ? '🟠' :
+                 f.severity === 'MINOR'    ? '🟡' : '🔵';
+    const src = f.source ? '[' + f.source.toUpperCase() + ']' : '';
+    console.log('  ' + icon + ' #' + (i+1) + ' [' + f.severity + '] ' + src + ' ' + f.file + ':' + f.startLine);
+    console.log('     ' + f.issue);
     console.log('');
 });
-"
+" 2>/dev/null
 else
-    cat "$RESULTS_FILE" | grep -o '"issue":"[^"]*"' | sed 's/"issue":"//;s/"//' | head -20
+    grep -o '"issue":"[^"]*"' "$RESULTS_FILE" | sed 's/"issue":"//;s/"//' | nl | head -20
 fi
 
-# ── Prompt developer ──────────────────────────────────────────────────────────
-echo ""
-echo -e "${YELLOW}What would you like to do?${NC}"
-echo "  [a] Apply all fixes automatically and re-push"
+# ── Main menu ─────────────────────────────────────────────────────────────────
+echo -e "${YELLOW}${BOLD}What would you like to do?${NC}"
+echo "  [r] Review each fix one by one  (accept / skip / edit per fix)"
+echo "  [a] Apply all fixes automatically"
 echo "  [s] Show full JSON report"
 echo "  [p] Push anyway (ignore issues)"
-echo "  [x] Cancel push (fix manually)"
+echo "  [x] Cancel push"
 echo ""
-printf "Choice [a/s/p/x]: "
+printf "Choice [r/a/s/p/x]: "
 read -r choice </dev/tty
 
+# ── Helper: print a coloured diff for one fix ─────────────────────────────────
+show_diff() {
+    local original="$1"
+    local suggested="$2"
+    echo -e "${RED}  - ${original}${NC}"
+    echo -e "${GREEN}  + ${suggested}${NC}"
+}
+
+# ── Helper: call /apply-fixes with a list of fixes ───────────────────────────
+do_apply() {
+    local fixes_json="$1"
+    local apply_body
+    apply_body=$(printf '{"projectPath":"%s","sonarProjectKey":"%s","branch":"%s","rescanAfterApply":false,"fixes":%s}' \
+        "$PROJECT_PATH" "$SONAR_PROJECT_KEY" "$BRANCH" "$fixes_json")
+
+    local status
+    status=$(curl -s -o /tmp/apply-result-$$.json -w "%{http_code}" \
+        -X POST "${MCP_SERVER}/apply-fixes" \
+        -H "Content-Type: application/json" \
+        --max-time 60 \
+        -d "$apply_body")
+
+    if [ "$status" = "200" ]; then
+        local applied failed
+        applied=$(grep -o '"appliedCount":[0-9]*' /tmp/apply-result-$$.json | cut -d: -f2)
+        failed=$(grep -o '"failedCount":[0-9]*' /tmp/apply-result-$$.json | cut -d: -f2)
+        echo -e "${GREEN}✅ Applied: ${applied:-0} fix(es)${NC}"
+        [ "${failed:-0}" -gt "0" ] && \
+            echo -e "${YELLOW}⚠  Could not apply: ${failed} fix(es) — original code not found (may already be fixed)${NC}"
+    else
+        echo -e "${RED}❌ Apply fixes failed (HTTP ${status})${NC}"
+    fi
+}
+
 case "$choice" in
+
+    # ── Per-fix review ────────────────────────────────────────────────────────
+    r|R)
+        if ! command -v node &>/dev/null; then
+            echo -e "${YELLOW}⚠  Per-fix review requires node. Falling back to apply-all prompt.${NC}"
+            printf "Apply all fixes? [y/N]: "
+            read -r confirm </dev/tty
+            if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+                ALL_FIXES=$(node -e "process.stdout.write(JSON.stringify(require('$RESULTS_FILE').fixes))" 2>/dev/null \
+                    || grep -o '"fixes":\[.*\]' "$RESULTS_FILE" | sed 's/"fixes"://')
+                do_apply "$ALL_FIXES"
+            fi
+            echo -e "${YELLOW}Review applied changes and run git push again.${NC}"
+            exit 1
+        fi
+
+        echo ""
+        echo -e "${CYAN}${BOLD}── Per-fix Review Mode ────────────────────────────────────${NC}"
+        echo -e "  For each fix: ${GREEN}[y]${NC} apply  ${RED}[n]${NC} skip  ${YELLOW}[e]${NC} open in editor  ${BOLD}[a]${NC} apply all remaining  ${BOLD}[x]${NC} stop reviewing"
+        echo ""
+
+        # Extract fixes count
+        FIX_COUNT=$(node -e "console.log(require('$RESULTS_FILE').fixes.length)" 2>/dev/null)
+        SELECTED_FIXES="[]"
+        APPLY_ALL_REMAINING=0
+
+        for i in $(seq 0 $((FIX_COUNT - 1))); do
+            FIX=$(node -e "
+const d = require('$RESULTS_FILE');
+const f = d.fixes[$i];
+console.log(JSON.stringify(f));
+" 2>/dev/null)
+
+            FILE=$(echo "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).file||'')" 2>/dev/null)
+            LINE=$(echo "$FIX" | node -e "process.stdout.write(String(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).startLine||''))" 2>/dev/null)
+            SEV=$(echo  "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).severity||'')" 2>/dev/null)
+            SRC=$(echo  "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).source||'')" 2>/dev/null)
+            ISSUE=$(echo "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).issue||'')" 2>/dev/null)
+            ORIG=$(echo  "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).originalCode||'')" 2>/dev/null)
+            SUGG=$(echo  "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).suggestedCode||'')" 2>/dev/null)
+            EXPL=$(echo  "$FIX" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).explanation||'')" 2>/dev/null)
+
+            echo -e "${BOLD}── Fix $((i+1)) / ${FIX_COUNT} ──────────────────────────────────────────${NC}"
+            echo -e "  ${BOLD}File    :${NC} ${FILE}:${LINE}"
+            echo -e "  ${BOLD}Severity:${NC} ${SEV}  [${SRC}]"
+            echo -e "  ${BOLD}Issue   :${NC} ${ISSUE}"
+            echo -e "  ${BOLD}Why     :${NC} ${EXPL}"
+            echo ""
+            echo -e "  ${BOLD}Change:${NC}"
+            show_diff "$ORIG" "$SUGG"
+            echo ""
+
+            if [ "$APPLY_ALL_REMAINING" -eq 1 ]; then
+                echo -e "  ${GREEN}→ Auto-applying (apply-all-remaining selected)${NC}"
+                SELECTED_FIXES=$(node -e "
+const sel = $SELECTED_FIXES;
+const fix = $FIX;
+sel.push(fix);
+process.stdout.write(JSON.stringify(sel));
+" 2>/dev/null)
+                continue
+            fi
+
+            printf "  Apply this fix? [y/n/e/a/x]: "
+            read -r fix_choice </dev/tty
+
+            case "$fix_choice" in
+                y|Y)
+                    echo -e "  ${GREEN}✔ Accepted${NC}"
+                    SELECTED_FIXES=$(node -e "
+const sel = $SELECTED_FIXES;
+const fix = $FIX;
+sel.push(fix);
+process.stdout.write(JSON.stringify(sel));
+" 2>/dev/null)
+                    ;;
+                e|E)
+                    # Write suggestedCode to a temp file for editing
+                    TMP_EDIT="/tmp/fix-edit-$$.txt"
+                    echo "$SUGG" > "$TMP_EDIT"
+                    EDITOR_CMD="${VISUAL:-${EDITOR:-vi}}"
+                    echo -e "  ${YELLOW}Opening in ${EDITOR_CMD}... (save and close to continue)${NC}"
+                    "$EDITOR_CMD" "$TMP_EDIT" </dev/tty
+                    EDITED=$(cat "$TMP_EDIT")
+                    rm -f "$TMP_EDIT"
+                    echo -e "  ${GREEN}✔ Accepted with your edits${NC}"
+                    # Replace suggestedCode in the fix with the edited version
+                    SELECTED_FIXES=$(node -e "
+const sel = $SELECTED_FIXES;
+const fix = $FIX;
+fix.suggestedCode = $(node -e "process.stdout.write(JSON.stringify('$EDITED')" 2>/dev/null || echo "\"$EDITED\"");
+sel.push(fix);
+process.stdout.write(JSON.stringify(sel));
+" 2>/dev/null)
+                    ;;
+                a|A)
+                    echo -e "  ${GREEN}✔ Accepted — applying all remaining fixes too${NC}"
+                    APPLY_ALL_REMAINING=1
+                    SELECTED_FIXES=$(node -e "
+const sel = $SELECTED_FIXES;
+const fix = $FIX;
+sel.push(fix);
+process.stdout.write(JSON.stringify(sel));
+" 2>/dev/null)
+                    ;;
+                x|X)
+                    echo -e "  ${YELLOW}Stopped reviewing. Applying selected fixes so far.${NC}"
+                    break
+                    ;;
+                *)
+                    echo -e "  ${YELLOW}↷ Skipped${NC}"
+                    ;;
+            esac
+            echo ""
+        done
+
+        # Apply selected fixes
+        SEL_COUNT=$(node -e "console.log($SELECTED_FIXES.length)" 2>/dev/null || echo 0)
+        if [ "${SEL_COUNT:-0}" -gt 0 ]; then
+            echo -e "🔧 Applying ${SEL_COUNT} selected fix(es)..."
+            do_apply "$SELECTED_FIXES"
+            echo ""
+            echo -e "${YELLOW}Review the applied changes, then run git push again.${NC}"
+        else
+            echo -e "${YELLOW}No fixes selected. Push cancelled — fix issues manually or use [p] to push anyway.${NC}"
+        fi
+        exit 1
+        ;;
+
+    # ── Apply all ─────────────────────────────────────────────────────────────
     a|A)
         echo ""
-        echo -e "🔧 Applying fixes..."
-        FIXES_JSON=$(cat "$RESULTS_FILE" | node -e "
-const data = require('/dev/stdin');
-const req = { projectPath: data.projectPath, fixes: data.fixes, rescanAfterApply: false };
-process.stdout.write(JSON.stringify(req));
-" 2>/dev/null || cat "$RESULTS_FILE")
-
-        APPLY_STATUS=$(curl -s -o /tmp/apply-result-$$.json -w "%{http_code}" \
-            -X POST "${MCP_SERVER}/apply-fixes" \
-            -H "Content-Type: application/json" \
-            --max-time 60 \
-            -d "$FIXES_JSON")
-
-        if [ "$APPLY_STATUS" = "200" ]; then
-            APPLIED=$(cat /tmp/apply-result-$$.json | grep -o '"appliedCount":[0-9]*' | cut -d: -f2)
-            FAILED=$(cat /tmp/apply-result-$$.json | grep -o '"failedCount":[0-9]*' | cut -d: -f2)
-            echo -e "${GREEN}✅ Applied: ${APPLIED:-0} fix(es)${NC}"
-            [ "${FAILED:-0}" -gt "0" ] && echo -e "${YELLOW}⚠  Could not apply: ${FAILED} fix(es) (manual fix required)${NC}"
-            rm -f /tmp/apply-result-$$.json
-        else
-            echo -e "${RED}❌ Apply fixes failed (HTTP ${APPLY_STATUS})${NC}"
-        fi
-        rm -f "$RESULTS_FILE"
+        echo -e "🔧 Applying all ${TOTAL} fix(es)..."
+        ALL_FIXES=$(node -e "process.stdout.write(JSON.stringify(require('$RESULTS_FILE').fixes))" 2>/dev/null \
+            || grep -o '"fixes":\[.*\]' "$RESULTS_FILE" | sed 's/"fixes"://')
+        do_apply "$ALL_FIXES"
         echo ""
-        echo -e "${YELLOW}Please review the applied changes, then run git push again.${NC}"
-        exit 1  # Block this push — dev should review and re-push
+        echo -e "${YELLOW}Review the applied changes, then run git push again.${NC}"
+        exit 1
         ;;
+
+    # ── Show full JSON ────────────────────────────────────────────────────────
     s|S)
         cat "$RESULTS_FILE"
         echo ""
         printf "Push anyway? [y/N]: "
         read -r confirm </dev/tty
-        [ "$confirm" = "y" ] || [ "$confirm" = "Y" ] && { rm -f "$RESULTS_FILE"; exit 0; }
-        rm -f "$RESULTS_FILE"
+        [ "$confirm" = "y" ] || [ "$confirm" = "Y" ] && exit 0
         exit 1
         ;;
+
+    # ── Push anyway ───────────────────────────────────────────────────────────
     p|P)
         echo -e "${YELLOW}⚠  Pushing with known issues.${NC}"
-        rm -f "$RESULTS_FILE"
         exit 0
         ;;
+
+    # ── Cancel ────────────────────────────────────────────────────────────────
     *)
         echo -e "${RED}Push cancelled. Fix issues and push again.${NC}"
-        rm -f "$RESULTS_FILE"
         exit 1
         ;;
 esac

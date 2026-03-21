@@ -377,16 +377,34 @@ flowchart TD
     A([git push]) --> B[pre-push hook triggers]
     B --> C[POST /scan-local\nrunSonarScan=false\nrunSnykScan=true]
     C --> D{Issues found?}
-    D -- no issues --> E([Push proceeds])
-    D -- issues found --> F[Display issues\nfile, line, severity, description]
+    D -- no issues --> E([Push proceeds ✅])
+    D -- issues found --> F[Display issue summary\nfile · line · severity · description]
     F --> G{User choice}
-    G -- a: apply fixes --> H[POST /apply-fixes\nall suggestions]
-    H --> I[Files patched on disk]
-    I --> E
-    G -- s: show details --> J[Print full JSON\noriginalCode + suggestedCode]
-    J --> G
+
+    G -- r: review per fix --> R[Show each fix as diff\noriginalCode → suggestedCode]
+    R --> RC{Per-fix choice}
+    RC -- y: accept --> SEL[Add to selected list]
+    RC -- n: skip --> NEXT[Next fix]
+    RC -- e: edit --> EDIT[Open suggestedCode\nin editor, then accept]
+    RC -- a: apply all remaining --> SEL
+    RC -- x: stop reviewing --> APPLY
+    SEL --> NEXT
+    NEXT --> RC
+    NEXT --> APPLY[POST /apply-fixes\nselected fixes only]
+    EDIT --> SEL
+
+    G -- a: apply all --> H[POST /apply-fixes\nall suggestions]
+    G -- s: show JSON --> J[Print full JSON report]
+    J --> JP{Push anyway?}
+    JP -- yes --> E
+    JP -- no --> K
+
+    H --> I[Files patched on disk\n.bak backup created]
+    APPLY --> I
+    I --> REV([Review changes\nthen git push again])
+
     G -- p: push anyway --> E
-    G -- x: cancel --> K([Push cancelled])
+    G -- x: cancel --> K([Push cancelled ❌])
 ```
 
 ```bash
