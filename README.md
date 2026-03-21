@@ -32,7 +32,7 @@ git push  ◄── pre-push hook runs the whole flow automatically
 ## Features
 
 - **SonarCloud integration** — fetches issues directly via the official SonarQube MCP server; optionally triggers a fresh `mvn sonar:sonar` scan
-- **Snyk scanning** — dependency CVEs and SAST issues via `snyk/snyk:maven` Docker image
+- **Snyk scanning** — dependency CVEs (`snyk test`) and SAST issues (`snyk code test`) via Docker; no local CLI needed (see [SNYK_INTEGRATION.md](SNYK_INTEGRATION.md))
 - **Accurate LLM fixes** — reads actual source code at each issue location before sending to LLM; eliminates hallucinated `originalCode`
 - **13-model LLM fallback chain** — OpenRouter free → Gemini free → xAI Grok; never uses paid models without explicit opt-in (`paid: true` flag)
 - **One-command apply** — finds `originalCode` in file, replaces with `suggestedCode`, creates `.bak` backup
@@ -60,7 +60,7 @@ git push  ◄── pre-push hook runs the whole flow automatically
 - **Java 17+** on PATH
 - **Docker Desktop** running (`docker ps` works)
 - A **SonarCloud** project that has been scanned at least once
-- A **Snyk** account (free tier is enough)
+- A **Snyk** account (free tier is enough) — see [SNYK_INTEGRATION.md](SNYK_INTEGRATION.md) for token setup
 
 ---
 
@@ -185,6 +185,7 @@ sonarqube:
 snyk:
   token: <your-token>
   docker-image: snyk/snyk:maven   # change to snyk/snyk:gradle for Gradle projects
+  # See SNYK_INTEGRATION.md for full token setup guide and available Docker images
 
 llm:
   providers:
@@ -195,6 +196,30 @@ llm:
       model: models/gemini-2.5-flash-lite
       paid: false
 ```
+
+---
+
+## Snyk Integration
+
+Snyk runs inside Docker — no local Snyk CLI installation required. It performs two scan types on every `POST /scan-local` call (when `runSnykScan: true`):
+
+| Scan | Command | Finds |
+|------|---------|-------|
+| Dependency scan | `snyk test --json` | CVEs in `pom.xml` / `build.gradle` dependencies |
+| SAST scan | `snyk code test --json` | Security issues in your own source code |
+
+The raw JSON from both scans is sent to the LLM alongside SonarQube issues. The LLM generates `FixSuggestion` entries for each vulnerability, with `"source": "snyk"` and `"file": "pom.xml"` for dependency fixes.
+
+**Docker images by project type:**
+
+| Project type | Image |
+|-------------|-------|
+| Maven / Spring Boot | `snyk/snyk:maven` (default) |
+| Gradle | `snyk/snyk:gradle` |
+| Node.js | `snyk/snyk:node` |
+| Python | `snyk/snyk:python` |
+
+> See **[SNYK_INTEGRATION.md](SNYK_INTEGRATION.md)** for token setup, path conversion details, exit code handling, output format, and full troubleshooting guide.
 
 ---
 
@@ -235,7 +260,8 @@ LocalDevScanMcpDemo/
 
 | Document | Description |
 |----------|-------------|
-| [LOCAL_SCAN_GUIDE.md](LOCAL_SCAN_GUIDE.md) | Full usage guide — flow diagrams, API reference, architecture, LLM fallback chain, Snyk image table |
+| [LOCAL_SCAN_GUIDE.md](LOCAL_SCAN_GUIDE.md) | Full usage guide — flow diagrams, API reference, architecture, LLM fallback chain |
+| [SNYK_INTEGRATION.md](SNYK_INTEGRATION.md) | Snyk dependency & SAST scanning — Docker images, token setup, output format, troubleshooting |
 | [SONARQUBE_MCP.md](SONARQUBE_MCP.md) | SonarQube MCP server setup and tool reference |
 | [GITHUB_MCP_INTEGRATION.md](GITHUB_MCP_INTEGRATION.md) | GitHub MCP integration guide (for the PR-analysis flow) |
 | [AutomaticWebhookInLocalhost.md](AutomaticWebhookInLocalhost.md) | Setting up GitHub webhooks on localhost via ngrok |
