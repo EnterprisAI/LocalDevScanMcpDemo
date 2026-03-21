@@ -279,17 +279,6 @@ LocalDevScanMcpDemo/
 
 ---
 
-## Related Projects
-
-This is **Phase 2** of a two-part local developer quality workflow:
-
-| Project | Phase | Description |
-|---------|-------|-------------|
-| [SonarqubeGithubMcpDemo](../SonarqubeGithubMcpDemo) | Phase 1 | PR-based review — LLM posts a code review comment to the GitHub PR using SonarQube + GitHub MCP |
-| **LocalDevScanMcpDemo** (this repo) | Phase 2 | Local pre-push fix — scan and patch files before the PR is created |
-
----
-
 ## License
 
 This project is for internal/private use. All credentials in `application.yaml` are personal API keys — keep the repository private.
