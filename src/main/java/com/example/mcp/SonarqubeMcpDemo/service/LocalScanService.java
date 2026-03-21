@@ -9,7 +9,6 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -25,8 +24,8 @@ import java.util.stream.Collectors;
  * 1. Optionally runs mvn sonar:sonar to push results to SonarCloud
  * 2. Reads SonarCloud issues directly via the SonarQube MCP client
  * 3. Reads actual file content for each issue location
- * 4. Runs Snyk dependency + SAST scan via Docker
- * 5. Uses LLM to generate FixSuggestion[] with accurate originalCode
+ * 4. Runs Snyk dependency scan via Docker
+ * 5. Uses FallbackLlmService to generate FixSuggestion[] (tries free models in order)
  */
 @Service
 public class LocalScanService {
@@ -67,22 +66,22 @@ public class LocalScanService {
             - Return ONLY the JSON array, nothing else
             """;
 
-    private final ChatClient chatClient;
+    private final FallbackLlmService fallbackLlmService;
     private final SnykScanService snykScanService;
     private final SonarQubeProperties sonarQubeProperties;
     private final McpSyncClient sonarqubeClient;
     private final ObjectMapper objectMapper;
 
-    public LocalScanService(ChatClient.Builder builder,
+    public LocalScanService(FallbackLlmService fallbackLlmService,
                             SnykScanService snykScanService,
                             SonarQubeProperties sonarQubeProperties,
                             McpSyncClient sonarqubeMcpClient,
                             @Qualifier("mcpServerObjectMapper") ObjectMapper objectMapper) {
+        this.fallbackLlmService = fallbackLlmService;
         this.snykScanService = snykScanService;
         this.sonarQubeProperties = sonarQubeProperties;
         this.sonarqubeClient = sonarqubeMcpClient;
         this.objectMapper = objectMapper;
-        this.chatClient = builder.defaultSystem(SYSTEM_PROMPT).build();
         log.info("LocalScanService ready");
     }
 
@@ -95,7 +94,7 @@ public class LocalScanService {
             runSonarScan(request);
         }
 
-        // Step 2: Fetch SonarQube issues directly via MCP (no LLM needed for this)
+        // Step 2: Fetch SonarQube issues directly via MCP
         List<SonarIssueInfo> sonarIssues = fetchSonarIssues(request.getSonarProjectKey());
         log.info("Fetched {} SonarQube issues", sonarIssues.size());
 
@@ -111,11 +110,11 @@ public class LocalScanService {
         // Step 4: Enrich each SonarQube issue with actual file content
         List<EnrichedIssue> enriched = enrichWithFileContent(request.getProjectPath(), sonarIssues);
 
-        // Step 5: Build prompt with actual code snippets and call LLM
+        // Step 5: Build prompt with actual code snippets and call LLM via fallback chain
         String prompt = buildPrompt(request, enriched, snykDependencyJson, snykCodeJson);
-        log.info("Calling LLM to generate fix suggestions for {} issues (prompt: {} chars)...",
+        log.info("Calling LLM (fallback chain) for {} issues (prompt: {} chars)...",
                 enriched.size(), prompt.length());
-        String llmResponse = chatClient.prompt(prompt).call().content();
+        String llmResponse = fallbackLlmService.chat(SYSTEM_PROMPT, prompt);
         log.info("LLM response received ({} chars)", llmResponse != null ? llmResponse.length() : 0);
 
         return parseFixSuggestions(llmResponse);
@@ -136,20 +135,19 @@ public class LocalScanService {
                     .map(c -> ((McpSchema.TextContent) c).text())
                     .collect(Collectors.joining("\n"));
 
-            return parseSonarIssues(responseText, projectKey);
+            return parseSonarIssues(responseText);
         } catch (Exception e) {
             log.error("Failed to fetch SonarQube issues: {}", e.getMessage());
             return List.of();
         }
     }
 
-    private List<SonarIssueInfo> parseSonarIssues(String json, String projectKey) {
+    private List<SonarIssueInfo> parseSonarIssues(String json) {
         List<SonarIssueInfo> issues = new ArrayList<>();
         try {
             JsonNode root = objectMapper.readTree(json);
             JsonNode issuesNode = root.path("issues");
             if (issuesNode.isMissingNode()) {
-                // The tool might return the content as text with embedded JSON
                 int start = json.indexOf('{');
                 if (start >= 0) {
                     root = objectMapper.readTree(json.substring(start));
@@ -159,9 +157,7 @@ public class LocalScanService {
             if (issuesNode.isArray()) {
                 for (JsonNode issue : issuesNode) {
                     String component = issue.path("component").asText("");
-                    // component format: "projectKey:src/main/java/..."
                     String filePath = component.contains(":") ? component.substring(component.indexOf(':') + 1) : component;
-                    // line may be at top-level or inside textRange
                     int line = issue.path("line").asInt(0);
                     if (line == 0) line = issue.path("textRange").path("startLine").asInt(1);
                     int endLine = issue.path("textRange").path("endLine").asInt(line);
@@ -169,11 +165,8 @@ public class LocalScanService {
                     String severity = issue.path("severity").asText("MINOR");
                     String message = issue.path("message").asText("");
                     String type = issue.path("type").asText("CODE_SMELL");
-
                     issues.add(new SonarIssueInfo(filePath, line, endLine, rule, severity, message, type));
                 }
-            } else {
-                log.warn("Could not parse SonarQube issues JSON: {}", json.substring(0, Math.min(500, json.length())));
             }
         } catch (Exception e) {
             log.error("Error parsing SonarQube issues: {}", e.getMessage());
@@ -197,11 +190,9 @@ public class LocalScanService {
                     continue;
                 }
                 List<String> allLines = Files.readAllLines(filePath);
-                // Read a context window: 2 lines before, issue line, 2 lines after
-                int from = Math.max(0, issue.startLine() - 3);  // 0-based
-                int to = Math.min(allLines.size(), issue.endLine() + 2);  // exclusive
+                int from = Math.max(0, issue.startLine() - 3);
+                int to = Math.min(allLines.size(), issue.endLine() + 2);
                 List<String> window = allLines.subList(from, to);
-                // Number the lines for clarity
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < window.size(); i++) {
                     sb.append("  ").append(from + i + 1).append(": ").append(window.get(i)).append("\n");
@@ -221,8 +212,8 @@ public class LocalScanService {
                                String snykDependencyJson, String snykCodeJson) {
         StringBuilder sb = new StringBuilder();
         sb.append("Project: ").append(request.getProjectPath()).append("\n\n");
-
         sb.append("## SonarQube Issues (").append(sonarIssues.size()).append(" total)\n\n");
+
         for (int i = 0; i < sonarIssues.size(); i++) {
             EnrichedIssue ei = sonarIssues.get(i);
             SonarIssueInfo issue = ei.issue();
@@ -240,7 +231,6 @@ public class LocalScanService {
             sb.append("\n");
         }
 
-        // Include Snyk results (truncated)
         String snykDep = truncate(snykDependencyJson, 5000);
         String snykCode = truncate(snykCodeJson, 5000);
         if (!snykDep.equals("{}")) {
@@ -284,7 +274,7 @@ public class LocalScanService {
         try {
             String json = llmResponse.trim();
             if (json.startsWith("```")) {
-                json = json.replaceAll("^```[a-z]*\\n?", "").replaceAll("```$", "").trim();
+                json = json.replaceAll("(?s)^```[a-z]*\\n?", "").replaceAll("```$", "").trim();
             }
             int start = json.indexOf('[');
             int end = json.lastIndexOf(']');

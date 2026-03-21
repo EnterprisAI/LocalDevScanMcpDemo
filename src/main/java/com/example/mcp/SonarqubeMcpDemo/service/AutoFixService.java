@@ -3,6 +3,7 @@ package com.example.mcp.SonarqubeMcpDemo.service;
 import com.example.mcp.SonarqubeMcpDemo.model.ApplyFixesRequest;
 import com.example.mcp.SonarqubeMcpDemo.model.FixSuggestion;
 import com.example.mcp.SonarqubeMcpDemo.model.ScanRequest;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -37,7 +38,8 @@ public class AutoFixService {
         this.localScanService = localScanService;
     }
 
-    public record ApplyResult(List<FixSuggestion> applied, List<FixSuggestion> failed, String rescanSummary) {}
+    public record ApplyResult(List<FixSuggestion> applied, List<FixSuggestion> failed, String rescanSummary,
+                              List<FixSuggestion> rescanFixes) {}
 
     public ApplyResult applyFixes(ApplyFixesRequest request) throws Exception {
         List<FixSuggestion> applied = new ArrayList<>();
@@ -76,23 +78,30 @@ public class AutoFixService {
 
         // Optionally re-scan
         String rescanSummary = null;
+        List<FixSuggestion> rescanFixes = null;
         if (request.isRescanAfterApply() && !applied.isEmpty()) {
             log.info("Re-scanning after applying {} fix(es)...", applied.size());
             try {
                 ScanRequest rescan = new ScanRequest();
                 rescan.setProjectPath(request.getProjectPath());
-                rescan.setRunSonarScan(false); // skip mvn sonar:sonar for speed
-                rescan.setRunSnykScan(true);
-                // Extract sonarProjectKey from first fix's context — caller should provide it
-                // For now just run snyk rescan
-                rescanSummary = "Rescan requested — run POST /scan-local to get updated results";
+                rescan.setSonarProjectKey(request.getSonarProjectKey());
+                rescan.setBranch(request.getBranch());
+                rescan.setRunSonarScan(false); // skip mvn sonar:sonar for speed — use cached SonarCloud results
+                rescan.setRunSnykScan(request.getSonarProjectKey() == null); // snyk-only if no sonar key
+                rescanFixes = localScanService.scan(rescan);
+                rescanSummary = String.format(
+                        "Rescan complete: %d remaining issue(s) from SonarCloud " +
+                        "(applied %d local fix(es) — run mvn sonar:sonar then rescan to see updated count)",
+                        rescanFixes.size(), applied.size());
+                log.info(rescanSummary);
             } catch (Exception e) {
                 rescanSummary = "Rescan failed: " + e.getMessage();
+                log.error("Rescan failed: {}", e.getMessage());
             }
         }
 
         log.info("Apply complete: {} applied, {} failed", applied.size(), failed.size());
-        return new ApplyResult(applied, failed, rescanSummary);
+        return new ApplyResult(applied, failed, rescanSummary, rescanFixes);
     }
 
     private boolean applyFix(String projectPath, FixSuggestion fix) throws IOException {

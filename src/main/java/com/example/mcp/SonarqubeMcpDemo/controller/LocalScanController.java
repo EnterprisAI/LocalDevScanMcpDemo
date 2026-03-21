@@ -103,13 +103,17 @@ public class LocalScanController {
 
         try {
             AutoFixService.ApplyResult result = autoFixService.applyFixes(request);
-            return ResponseEntity.ok(Map.of(
-                    "appliedCount", result.applied().size(),
-                    "failedCount", result.failed().size(),
-                    "applied", result.applied(),
-                    "failed", result.failed(),
-                    "rescanNote", result.rescanSummary() != null ? result.rescanSummary() : "No rescan requested"
-            ));
+            var response = new java.util.LinkedHashMap<String, Object>();
+            response.put("appliedCount", result.applied().size());
+            response.put("failedCount", result.failed().size());
+            response.put("applied", result.applied());
+            response.put("failed", result.failed());
+            response.put("rescanNote", result.rescanSummary() != null ? result.rescanSummary() : "No rescan requested");
+            if (result.rescanFixes() != null) {
+                response.put("remainingIssues", result.rescanFixes().size());
+                response.put("rescanFixes", result.rescanFixes());
+            }
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("Apply fixes failed: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));

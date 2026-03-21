@@ -1,14 +1,16 @@
 spring:
   application:
     name: LocalDevScanMcpDemo
+  # Spring AI still needed for PRAnalysisService / ChatController (existing endpoints)
+  # Points to OpenRouter as default single-model config
   ai:
     openai:
-      base-url: ${OPENAI_BASE_URL:https://api.openai.com}
-      api-key: ${OPENAI_API_KEY:${GITHUB_TOKEN:}}
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
       chat:
-        completions-path: ${OPENAI_COMPLETIONS_PATH:/v1/chat/completions}
+        completions-path: /chat/completions
         options:
-          model: ${OPENAI_MODEL:models/gemini-2.5-flash-lite}
+          model: nvidia/nemotron-3-super-120b-a12b:free
     mcp:
       server:
         name: local-dev-scan-mcp
@@ -16,18 +18,125 @@ spring:
         type: SYNC
 
 sonarqube:
-  url: ${SONARQUBE_URL:https://sonarcloud.io}
-  token: ${SONARQUBE_TOKEN:}
-  org: ${SONARQUBE_ORG:}
+  url: https://sonarcloud.io
+  token: a3bef20dc366fa30fc15cb65ba5d0b5ec35592b6
+  org: vivid-vortex-devops
 
 snyk:
-  token: ${SNYK_TOKEN:}
-  org-id: ${SNYK_ORG_ID:}
-  docker-image: ${SNYK_DOCKER_IMAGE:snyk/snyk:maven}
+  token: a23d51f8-8a0b-4a46-9b9a-16df80ceacf7
+  org-id: 2e7e4f17-2aa2-436a-a58f-b3646cb5de15
+  docker-image: snyk/snyk:maven
 
 github:
-  token: ${GITHUB_TOKEN:}
-  webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
+  token: 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
+  webhook-secret: ""
 
 server:
   port: 8080
+
+# ── LLM Fallback Chain ─────────────────────────────────────────────────────────
+# Providers are tried IN ORDER. Free models only — paid=true entries are skipped.
+# Add paid: true to any entry to exclude it from automatic use.
+llm:
+  providers:
+    # ── Tier 1: OpenRouter free models ──────────────────────────────────────────
+    - name: nemotron-super-120b
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: nvidia/nemotron-3-super-120b-a12b:free
+      paid: false
+
+    - name: arcee-trinity-large
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: arcee-ai/trinity-large-preview:free
+      paid: false
+
+    - name: nemotron-nano-30b
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: nvidia/nemotron-3-nano-30b-a3b:free
+      paid: false
+
+    - name: qwen3-coder-free
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: qwen/qwen3-coder:free
+      paid: false
+
+    - name: llama-3.3-70b
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: meta-llama/llama-3.3-70b-instruct:free
+      paid: false
+
+    - name: mistral-small-24b
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: mistralai/mistral-small-3.1-24b-instruct:free
+      paid: false
+
+    - name: gemma-3-27b-openrouter
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: google/gemma-3-27b-it:free
+      paid: false
+
+    - name: gemma-3-12b-openrouter
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: google/gemma-3-12b-it:free
+      paid: false
+
+    - name: qwen3-next-80b
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: qwen/qwen3-next-80b-a3b-instruct:free
+      paid: false
+
+    # ── Tier 2: Gemini free models (different provider, separate quota) ─────────
+    - name: gemini-flash-lite
+      base-url: https://generativelanguage.googleapis.com/v1beta/openai
+      api-key: AIzaSyCYw4Ak4hhHIuokMctxjPytWkfzopw6Nsg
+      completions-path: /chat/completions
+      model: models/gemini-2.5-flash-lite
+      paid: false
+
+    - name: gemma-3-27b-gemini
+      base-url: https://generativelanguage.googleapis.com/v1beta/openai
+      api-key: AIzaSyCYw4Ak4hhHIuokMctxjPytWkfzopw6Nsg
+      completions-path: /chat/completions
+      model: models/gemma-3-27b-it
+      paid: false
+
+    - name: gemma-3-12b-gemini
+      base-url: https://generativelanguage.googleapis.com/v1beta/openai
+      api-key: AIzaSyCYw4Ak4hhHIuokMctxjPytWkfzopw6Nsg
+      completions-path: /chat/completions
+      model: models/gemma-3-12b-it
+      paid: false
+
+    # ── Tier 3: xAI Grok (activate free tier at console.x.ai first) ─────────────
+    - name: grok-3-mini
+      base-url: https://api.x.ai/v1
+      api-key: xai-lsxg903pBZ4n3IjjH1nvg2TE653bU0H7vpZaS8lGnpgLcdfsNEH1eHyGVbfiS3PgzBQkEWzYTECwU8T3
+      completions-path: /chat/completions
+      model: grok-3-mini
+      paid: false
+
+    # ── Tier 4: Paid models — SET paid=false ONLY WHEN APPROVED ─────────────────
+    - name: qwen3-coder-paid
+      base-url: https://openrouter.ai/api/v1
+      api-key: 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
+      completions-path: /chat/completions
+      model: qwen/qwen3-coder
+      paid: true
