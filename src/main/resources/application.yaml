@@ -17,6 +17,38 @@ spring:
         version: 1.0.0
         type: SYNC
 
+# ── Scan Defaults ──────────────────────────────────────────────────────────────
+# To scan a different project: update these values and restart the server.
+# All fields can also be overridden per-request in the POST /scan-local body.
+# Call POST /scan-local with an empty body {} to use all these defaults.
+scan:
+  # Project to scan — absolute path on disk
+  project-path: C:/Temp/springboot-sonar-snyk-demo
+
+  # SonarCloud project key (find it: SonarCloud → Project → Project Information)
+  sonar-project-key: vivid-vortex-devops_springboot-sonar-snyk-demo
+
+  # Branch name — passed to sonar:sonar and shown in responses
+  branch: main
+
+  # Set true to run 'mvn sonar:sonar' before fetching issues (~2 min).
+  # Set false to use the last cached SonarCloud analysis (instant).
+  run-sonar-scan: false
+
+  # Set true to run Snyk dependency + SAST scan via Docker.
+  # Requires Docker Desktop to be running.
+  run-snyk-scan: true
+
+  # Maven executable — use 'mvn' for system Maven, './mvnw' for wrapper, or full path.
+  maven-executable: mvn
+
+  # Maven goals for the sonar scan. Change to 'package sonar:sonar' to skip tests.
+  maven-goals: verify sonar:sonar
+
+  # Timeout in minutes for the mvn sonar:sonar process.
+  sonar-scan-timeout-minutes: 10
+
+# ── SonarCloud credentials ─────────────────────────────────────────────────────
 sonarqube:
   url: https://sonarcloud.io
   token: a3bef20dc366fa30fc15cb65ba5d0b5ec35592b6

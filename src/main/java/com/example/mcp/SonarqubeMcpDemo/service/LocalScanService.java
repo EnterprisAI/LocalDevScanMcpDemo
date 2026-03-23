@@ -1,5 +1,6 @@
 package com.example.mcp.SonarqubeMcpDemo.service;
 
+import com.example.mcp.SonarqubeMcpDemo.config.ScanProperties;
 import com.example.mcp.SonarqubeMcpDemo.config.SonarQubeProperties;
 import com.example.mcp.SonarqubeMcpDemo.model.FixSuggestion;
 import com.example.mcp.SonarqubeMcpDemo.model.ScanRequest;
@@ -69,17 +70,20 @@ public class LocalScanService {
     private final FallbackLlmService fallbackLlmService;
     private final SnykScanService snykScanService;
     private final SonarQubeProperties sonarQubeProperties;
+    private final ScanProperties scanProperties;
     private final McpSyncClient sonarqubeClient;
     private final ObjectMapper objectMapper;
 
     public LocalScanService(FallbackLlmService fallbackLlmService,
                             SnykScanService snykScanService,
                             SonarQubeProperties sonarQubeProperties,
+                            ScanProperties scanProperties,
                             McpSyncClient sonarqubeMcpClient,
                             @Qualifier("mcpServerObjectMapper") ObjectMapper objectMapper) {
         this.fallbackLlmService = fallbackLlmService;
         this.snykScanService = snykScanService;
         this.sonarQubeProperties = sonarQubeProperties;
+        this.scanProperties = scanProperties;
         this.sonarqubeClient = sonarqubeMcpClient;
         this.objectMapper = objectMapper;
         log.info("LocalScanService ready");
@@ -247,24 +251,34 @@ public class LocalScanService {
     // ── SonarCloud Maven scan ──────────────────────────────────────────────────
 
     private void runSonarScan(ScanRequest request) throws Exception {
-        log.info("Running SonarCloud scan via Maven on: {}", request.getProjectPath());
-        List<String> cmd = new ArrayList<>(List.of(
-                "cmd", "/c", "mvn", "-B", "verify", "sonar:sonar",
-                "-Dsonar.projectKey=" + request.getSonarProjectKey(),
-                "-Dsonar.organization=" + sonarQubeProperties.getOrg(),
-                "-Dsonar.host.url=" + sonarQubeProperties.getUrl(),
-                "-Dsonar.token=" + sonarQubeProperties.getToken()
-        ));
+        String mavenExec = scanProperties.getMavenExecutable();
+        String goals     = scanProperties.getMavenGoals();
+        int    timeout   = scanProperties.getSonarScanTimeoutMinutes();
+        log.info("Running SonarCloud scan via '{}' ({}) on: {}", mavenExec, goals, request.getProjectPath());
+
+        // Build command: on Windows wrap in cmd /c so PATH is resolved correctly
+        List<String> cmd = new ArrayList<>();
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (isWindows) { cmd.add("cmd"); cmd.add("/c"); }
+        cmd.add(mavenExec);
+        cmd.add("-B");
+        // Add each goal/arg from the configured goals string
+        for (String goal : goals.split("\\s+")) { if (!goal.isBlank()) cmd.add(goal); }
+        cmd.add("-Dsonar.projectKey=" + request.getSonarProjectKey());
+        cmd.add("-Dsonar.organization=" + sonarQubeProperties.getOrg());
+        cmd.add("-Dsonar.host.url=" + sonarQubeProperties.getUrl());
+        cmd.add("-Dsonar.token=" + sonarQubeProperties.getToken());
         if (request.getBranch() != null && !request.getBranch().isBlank()) {
             cmd.add("-Dsonar.branch.name=" + request.getBranch());
         }
+
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(Paths.get(request.getProjectPath()).toFile());
         pb.inheritIO();
         Process process = pb.start();
-        boolean finished = process.waitFor(10, TimeUnit.MINUTES);
-        if (!finished) { process.destroyForcibly(); throw new RuntimeException("Maven sonar:sonar timed out"); }
-        if (process.exitValue() != 0) throw new RuntimeException("Maven sonar:sonar failed: " + process.exitValue());
+        boolean finished = process.waitFor(timeout, TimeUnit.MINUTES);
+        if (!finished) { process.destroyForcibly(); throw new RuntimeException("Maven sonar:sonar timed out after " + timeout + " min"); }
+        if (process.exitValue() != 0) throw new RuntimeException("Maven sonar:sonar failed (exit " + process.exitValue() + ")");
         log.info("SonarCloud scan completed");
     }
 
