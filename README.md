@@ -268,7 +268,7 @@ LocalDevScanMcpDemo/
 
 | Document | Description |
 |----------|-------------|
-| [LOCAL_SCAN_GUIDE.md](LOCAL_SCAN_GUIDE.md) | Full usage guide — flow diagrams, API reference, architecture, LLM fallback chain |
+| [LOCAL_SCAN_GUIDE.md](LOCAL_SCAN_GUIDE.md) | Full usage guide — new machine setup, scanning a different project, flow diagrams, API reference, architecture, LLM fallback chain, troubleshooting |
 | [SNYK_INTEGRATION.md](SNYK_INTEGRATION.md) | Snyk dependency & SAST scanning — Docker images, token setup, output format, troubleshooting |
 | [SONARQUBE_MCP.md](SONARQUBE_MCP.md) | SonarQube MCP server setup and tool reference |
 | [GITHUB_MCP_INTEGRATION.md](GITHUB_MCP_INTEGRATION.md) | GitHub MCP integration guide (for the PR-analysis flow) |

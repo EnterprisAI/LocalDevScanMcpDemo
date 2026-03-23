@@ -12,12 +12,15 @@ Fix bugs, vulnerabilities, and code smells **locally before creating a PR**, so 
 4. [LLM Fallback Chain](#llm-fallback-chain)
 5. [Apply-Fixes Flow](#apply-fixes-flow)
 6. [Quick Start](#quick-start)
-7. [API Reference](#api-reference)
-8. [Pre-Push Git Hook](#pre-push-git-hook)
-9. [Architecture](#architecture)
-10. [Supported LLMs](#supported-llms)
-11. [Snyk Docker Images](#snyk-docker-images)
-12. [Environment Variables](#environment-variables)
+7. [Running on a New Machine](#running-on-a-new-machine)
+8. [Scanning a Different Project](#scanning-a-different-project)
+9. [API Reference](#api-reference)
+10. [Pre-Push Git Hook](#pre-push-git-hook)
+11. [Architecture](#architecture)
+12. [Supported LLMs](#supported-llms)
+13. [Snyk Docker Images](#snyk-docker-images)
+14. [Environment Variables](#environment-variables)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -280,6 +283,150 @@ curl -X POST http://localhost:8080/apply-fixes \
 
 ---
 
+## Running on a New Machine
+
+Everything needed to run the app is inside the repository — no environment variables, no separate config files. Follow these steps after cloning on any machine.
+
+### Step 1 — Check prerequisites
+
+```bash
+# Java 17+ required
+java -version
+
+# Docker Desktop must be running
+docker --version
+docker ps        # should list containers with no error
+```
+
+- Java 17+ → download from [adoptium.net](https://adoptium.net)
+- Docker Desktop → download from [docker.com](https://www.docker.com/products/docker-desktop)
+
+### Step 2 — Clone this repo
+
+```bash
+git clone <LocalDevScanMcpDemo-repo-url>
+cd LocalDevScanMcpDemo
+```
+
+### Step 3 — Clone the project you want to scan
+
+Clone the target project separately and check out the branch you want to scan:
+
+```bash
+git clone https://github.com/your-org/your-project.git
+cd your-project
+git checkout feature/your-branch
+```
+
+### Step 4 — Update `application.yaml`
+
+Open `src/main/resources/application.yaml` and change **only the `scan` section**. Everything else (tokens, API keys, LLM providers) is already embedded.
+
+```yaml
+scan:
+  project-path: C:/path/to/your-project        # absolute path to the cloned project
+  sonar-project-key: your-sonarcloud-key        # find in SonarCloud → Project Information
+  branch: feature/your-branch                   # branch you checked out above
+  run-sonar-scan: false                         # false = use existing SonarCloud results
+  run-snyk-scan: true                           # requires Docker to be running
+```
+
+> **Finding your SonarCloud project key:** Log in to [sonarcloud.io](https://sonarcloud.io) → open your project → **Project Information** (bottom left) → copy the **Project Key**.
+
+> **No pom.xml / build file?** Set `run-snyk-scan: false` — Snyk needs a build manifest to scan dependencies.
+
+### Step 5 — Build and start the server
+
+```bash
+# Linux / Mac / Git Bash
+./run.sh
+
+# Windows CMD
+run.bat
+
+# Or manually
+./gradlew bootJar
+java -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
+```
+
+Wait for this line in the console:
+```
+Started Application in XX seconds
+```
+
+### Step 6 — Verify config
+
+```bash
+curl http://localhost:8080/scan-config
+```
+
+Confirm `projectPath`, `sonarProjectKey`, and `branch` match what you set in Step 4.
+
+### Step 7 — Run the scan
+
+```bash
+curl -X POST http://localhost:8080/scan-local \
+  -H "Content-Type: application/json" \
+  -d "{}"
+```
+
+Empty body `{}` — all values come from `application.yaml`. The scan takes **2–4 minutes** on first run (Snyk pulls its Docker image ~500 MB).
+
+### Step 8 — Apply fixes
+
+Copy any fix from the scan response and post it to `/apply-fixes`:
+
+```bash
+curl -X POST http://localhost:8080/apply-fixes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rescanAfterApply": true,
+    "fixes": [ { ...paste fix object from scan response... } ]
+  }'
+```
+
+`projectPath`, `sonarProjectKey`, and `branch` are optional — picked up from `application.yaml` automatically.
+
+### Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `docker ps` fails | Docker Desktop not running | Start Docker Desktop, wait for the whale icon to stop animating |
+| Port 8080 busy | Another process using 8080 | Start with `java -Dserver.port=8081 -jar ...` and use port 8081 in all curl calls |
+| `projectPath is required` error | `scan.project-path` missing or blank in YAML | Check `application.yaml` — path must be absolute and use forward slashes |
+| `sonarProjectKey is required` error | `scan.sonar-project-key` blank in YAML | Find the key in SonarCloud → Project Information |
+| All LLM providers exhausted | Daily free quota used up | Wait 1–2 hours for quota reset. Gemini resets at midnight Pacific. Activate xAI Grok free tier at `console.x.ai` for an extra fallback |
+| Snyk takes very long on first run | Docker pulling `snyk/snyk:maven` image (~500 MB) | Run `docker pull snyk/snyk:maven` before starting the app to pre-download |
+| Snyk `code test` fails (exit 2) | Snyk Code not enabled on free account | Enable it: [app.snyk.io](https://app.snyk.io) → Settings → Snyk Code → toggle On. Dependency scan still works. |
+| Wrong project scanned | Old Docker image cached with old JAR | Rebuild: `./gradlew bootJar`, then restart |
+
+---
+
+## Scanning a Different Project
+
+To point the app at a different project or branch, **only change these lines** in `application.yaml` and restart the server. No code changes needed.
+
+```yaml
+scan:
+  project-path: C:/path/to/new-project          # ← change
+  sonar-project-key: new-sonarcloud-key          # ← change
+  branch: feature/new-branch                     # ← change
+  run-sonar-scan: false                          # true = run mvn sonar:sonar first (~2 min)
+  run-snyk-scan: true                            # false = skip Snyk (no Docker needed)
+  maven-executable: mvn                          # or ./mvnw if project uses wrapper
+```
+
+**If project type is not Maven**, also change the Snyk Docker image:
+
+```yaml
+snyk:
+  docker-image: snyk/snyk:gradle    # gradle | node | python | ruby | dotnet
+```
+
+After saving, restart the server and call `GET /scan-config` to confirm the new values loaded. Then run `POST /scan-local` with an empty body `{}`.
+
+---
+
 ## API Reference
 
 ### `POST /scan-local`
@@ -533,3 +680,72 @@ All credentials are embedded in `application.yaml` for easy cloning. These envir
 | `OPENAI_API_KEY` | `spring.ai.openai.api-key` | For Spring AI ChatController endpoints |
 | `OPENAI_BASE_URL` | `spring.ai.openai.base-url` | For Spring AI ChatController endpoints |
 | `MSYS_NO_PATHCONV` | — | Set to `1` in Git Bash to prevent path conversion |
+
+---
+
+## Troubleshooting
+
+### Server won't start — port already in use
+```bash
+# Start on a different port
+java -Dserver.port=8081 -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
+
+# Then use port 8081 in all curl calls
+curl http://localhost:8081/scan-config
+```
+
+### Server won't start — Docker not running
+The SonarQube MCP client (`mcp/sonarqube` Docker image) starts on application boot. If Docker is not running, the app fails to start.
+```bash
+docker ps    # must work with no error before starting the app
+```
+
+### `projectPath is required` or `sonarProjectKey is required`
+The `scan.*` values in `application.yaml` are blank or the file wasn't saved. Check:
+```bash
+curl http://localhost:8080/scan-config   # shows what's actually loaded
+```
+
+### All LLM providers exhausted
+Free tier quotas are shared and reset on a schedule:
+- **OpenRouter** — per-minute rate limit, resets quickly but shared across all users
+- **Gemini** — 20 requests/day, resets at midnight Pacific Time
+- **xAI Grok** — activate free tier at [console.x.ai](https://console.x.ai) for an additional fallback
+
+While waiting for reset, you can check which providers are available by looking at the server logs:
+```
+Trying LLM provider: gemini-flash-lite ...
+⚠ Rate-limited on gemini-flash-lite (HTTP 429), trying next...
+```
+
+### Snyk scan takes 5+ minutes on first run
+Docker is pulling the `snyk/snyk:maven` image (~500 MB). Pre-download it before starting the app:
+```bash
+docker pull snyk/snyk:maven
+```
+
+### Snyk `code test` exits with code 2
+Snyk Code (SAST) requires enabling in your Snyk account:
+1. Log in to [app.snyk.io](https://app.snyk.io)
+2. Go to **Settings → Snyk Code**
+3. Toggle **Enable Snyk Code** → On
+
+Dependency scanning (`snyk test`) continues to work regardless.
+
+### `originalCode not found` when applying fixes
+The LLM's `originalCode` doesn't exactly match the file content. This happens when:
+- The file was already partially fixed
+- Line endings differ (CRLF vs LF) — the app normalizes these automatically
+- The LLM added/removed leading whitespace
+
+Re-run `/scan-local` to get a fresh `originalCode` from the current file state.
+
+### Git Bash path conversion errors (`/chat/completions` → Windows path)
+```bash
+# Always start the server with this prefix in Git Bash
+MSYS_NO_PATHCONV=1 java -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
+```
+This is handled automatically by `run.sh`.
+
+### Wrong project being scanned
+Run `GET /scan-config` to verify what's loaded. If stale values appear, ensure you saved `application.yaml` and restarted the server (not just reloaded).
