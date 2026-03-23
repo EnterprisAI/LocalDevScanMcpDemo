@@ -119,7 +119,8 @@ public class LocalScanService {
         log.info("Calling LLM (fallback chain) for {} issues (prompt: {} chars)...",
                 enriched.size(), prompt.length());
         String llmResponse = fallbackLlmService.chat(SYSTEM_PROMPT, prompt);
-        log.info("LLM response received ({} chars)", llmResponse != null ? llmResponse.length() : 0);
+        log.info("LLM response received ({} chars): [{}]", llmResponse != null ? llmResponse.length() : 0,
+                llmResponse != null && llmResponse.length() <= 50 ? llmResponse : "(see debug log)");
 
         return parseFixSuggestions(llmResponse);
     }
@@ -295,8 +296,9 @@ public class LocalScanService {
             if (start >= 0 && end > start) {
                 json = json.substring(start, end + 1);
             }
-            return objectMapper.readValue(json,
+            List<FixSuggestion> result = objectMapper.readValue(json,
                     objectMapper.getTypeFactory().constructCollectionType(List.class, FixSuggestion.class));
+            return result != null ? result : List.of();
         } catch (Exception e) {
             log.error("Failed to parse LLM response as JSON: {}", e.getMessage());
             log.debug("LLM response was: {}", llmResponse);
