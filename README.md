@@ -264,7 +264,9 @@ llm:
 
 ## Snyk Integration
 
-Snyk runs via the **Snyk MCP server** (`snyk mcp -t stdio`) — no Docker volume mounting required. It performs two scan types on every `POST /scan-local` call (when `runSnykScan: true`):
+Snyk runs via the **Snyk MCP server** (`snyk mcp -t stdio`) — no Docker volume mounting required. It performs two scan types on every `POST /scan-local` call (when `runSnykScan: true`).
+
+> **Why `npm install -g snyk` is required:** The locally installed `snyk` binary is the MCP server process — your app spawns it as a subprocess and talks to it over stdio. The binary itself is just the transport layer; the actual CVE database and SAST rules live in **Snyk Cloud**. The CLI authenticates to `snyk.io` using your `SNYK_TOKEN` and pulls live vulnerability data on every scan. No local token = no Snyk Cloud access = scan returns an auth error.
 
 | MCP Tool | Equivalent CLI | Finds |
 |----------|---------------|-------|

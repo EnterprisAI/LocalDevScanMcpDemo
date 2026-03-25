@@ -102,6 +102,34 @@ Performs static application security testing (SAST) directly on your source code
 
 ## How It Works — Under the Hood
 
+### Local CLI + Snyk Cloud: how they relate
+
+A common question: **why do I need to `npm install -g snyk` if Snyk runs in the cloud?**
+
+The locally installed `snyk` binary serves as the **MCP server process** — your Spring Boot app spawns it as a subprocess and communicates with it over stdio (MCP protocol). The binary itself is just the transport layer. The actual vulnerability intelligence (CVE database, SAST rules) lives in **Snyk Cloud** — the CLI authenticates to `snyk.io` using your `SNYK_TOKEN` and pulls live data on every scan.
+
+```
+Spring Boot app
+    │
+    └── spawns subprocess: snyk mcp -t stdio --disable-trust
+            │  (locally installed snyk CLI — acts as MCP server)
+            │
+            └── authenticates to Snyk Cloud (snyk.io) via SNYK_TOKEN
+                    │
+                    ├── snyk_sca_scan → checks pom.xml deps against Snyk CVE DB
+                    └── snyk_code_scan → uploads source for SAST analysis
+                            │
+                            └── returns results via stdio → Spring Boot app
+```
+
+**Key points:**
+- The local `snyk` binary is required — it's the MCP server; without it the app fails to start
+- A valid `snyk.token` is required — without it the CLI cannot authenticate to Snyk Cloud and scans return an auth error
+- No Docker volume mounting — unlike the old approach, the CLI reads the project path directly from the filesystem
+- CVE data is live from Snyk Cloud — not a local offline database
+
+---
+
 ### Startup (once at boot)
 
 ```
