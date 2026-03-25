@@ -1,135 +1,87 @@
 package com.example.mcp.SonarqubeMcpDemo.service;
 
-import com.example.mcp.SonarqubeMcpDemo.config.SnykProperties;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Runs Snyk scans via Docker subprocess and returns raw JSON output.
+ * Runs Snyk scans via the Snyk MCP server (npx snyk mcp -t stdio).
  *
- * <p>Runs three scan types:
+ * <p>Two scan types are executed:
  * <ul>
- *   <li>{@code snyk test} — open-source dependency vulnerabilities</li>
- *   <li>{@code snyk code test} — SAST code security issues</li>
+ *   <li>{@code snyk_sca_scan} — open-source dependency vulnerabilities (replaces snyk test)</li>
+ *   <li>{@code snyk_code_scan} — SAST code security issues (replaces snyk code test)</li>
  * </ul>
  *
- * <p>Docker must be running. The project directory is mounted into the container.
+ * <p>No Docker volume mounting required. The Snyk MCP server reads the local project path
+ * directly and reports findings to Snyk Cloud using the configured SNYK_TOKEN.
  */
 @Service
 public class SnykScanService {
 
     private static final Logger log = LoggerFactory.getLogger(SnykScanService.class);
 
-    private final SnykProperties snykProperties;
+    private final McpSyncClient snykMcpClient;
 
-    public SnykScanService(SnykProperties snykProperties) {
-        this.snykProperties = snykProperties;
+    public SnykScanService(@Qualifier("snykMcpClient") McpSyncClient snykMcpClient) {
+        this.snykMcpClient = snykMcpClient;
     }
 
     public record SnykResults(String dependencyJson, String codeJson, boolean success, String error) {}
 
     /**
-     * Runs snyk test (dependencies) and snyk code test (SAST) on the given project path.
+     * Runs snyk_sca_scan (dependencies) and snyk_code_scan (SAST) on the given project path
+     * via the Snyk MCP server.
+     *
+     * <p>The Snyk MCP server is started with {@code --disable-trust} so no folder trust prompt
+     * is shown — scans run fully headlessly.
      */
     public SnykResults scan(String projectPath) {
-        log.info("Starting Snyk scan on: {}", projectPath);
+        log.info("Starting Snyk MCP scan on: {}", projectPath);
 
-        // Normalize path for Docker volume mount (Windows → Docker-compatible)
-        String dockerPath = toDockerPath(projectPath);
+        String scaResult = callSnykTool("snyk_sca_scan", projectPath, "SCA (dependency)");
+        String codeResult = callSnykTool("snyk_code_scan", projectPath, "Code (SAST)");
 
-        // Note: "snyk" prefix is required because the Docker entrypoint passes args directly.
-        // snyk code test is not available in all images; failures are tolerated.
-        String dependencyJson = runSnykCommand(dockerPath, "snyk", "test", "--json");
-        String codeJson = runSnykCommand(dockerPath, "snyk", "code", "test", "--json");
+        boolean success = scaResult != null || codeResult != null;
+        String error = (!success) ? "Both snyk_sca_scan and snyk_code_scan failed" : null;
 
-        boolean success = dependencyJson != null || codeJson != null;
-        String error = (!success) ? "Both snyk test and snyk code test failed" : null;
-
-        log.info("Snyk scan complete. Dependency scan: {}, Code scan: {}",
-                dependencyJson != null ? "OK" : "FAILED",
-                codeJson != null ? "OK" : "FAILED");
+        log.info("Snyk MCP scan complete. SCA: {}, Code: {}",
+                scaResult != null ? "OK" : "FAILED",
+                codeResult != null ? "OK" : "FAILED");
 
         return new SnykResults(
-                dependencyJson != null ? dependencyJson : "{\"error\":\"snyk test failed\"}",
-                codeJson != null ? codeJson : "{\"error\":\"snyk code test failed\"}",
+                scaResult  != null ? scaResult  : "{\"error\":\"snyk_sca_scan failed\"}",
+                codeResult != null ? codeResult : "{\"error\":\"snyk_code_scan failed\"}",
                 success, error);
     }
 
-    private String runSnykCommand(String dockerProjectPath, String... snykArgs) {
+    private String callSnykTool(String toolName, String projectPath, String label) {
         try {
-            List<String> cmd = new ArrayList<>();
-            cmd.add("docker");
-            cmd.add("run");
-            cmd.add("--rm");
-            cmd.add("-e"); cmd.add("SNYK_TOKEN=" + snykProperties.getToken());
-            cmd.add("-v"); cmd.add(dockerProjectPath + ":/project");
-            cmd.add("-w"); cmd.add("/project");
-            cmd.add(snykProperties.getDockerImage());
-            for (String arg : snykArgs) {
-                cmd.add(arg);
-            }
+            log.info("Calling Snyk MCP tool: {} on {}", toolName, projectPath);
+            Map<String, Object> args = Map.of("path", projectPath);
+            var request = new McpSchema.CallToolRequest(toolName, args);
+            var result = snykMcpClient.callTool(request);
 
-            log.debug("Running: {}", String.join(" ", cmd));
+            String text = result.content().stream()
+                    .filter(c -> c instanceof McpSchema.TextContent)
+                    .map(c -> ((McpSchema.TextContent) c).text())
+                    .collect(Collectors.joining("\n"));
 
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(false);
-            Process process = pb.start();
-
-            String stdout = new BufferedReader(new InputStreamReader(process.getInputStream()))
-                    .lines().collect(Collectors.joining("\n"));
-            String stderr = new BufferedReader(new InputStreamReader(process.getErrorStream()))
-                    .lines().collect(Collectors.joining("\n"));
-
-            // Snyk exits with non-zero when vulnerabilities are found (exit code 1) — that's OK
-            boolean finished = process.waitFor(5, TimeUnit.MINUTES);
-            int exitCode = finished ? process.exitValue() : -1;
-
-            if (!stderr.isBlank()) {
-                log.debug("Snyk stderr: {}", stderr);
-            }
-
-            // Exit code 0 = no issues, 1 = issues found (both are valid JSON), 2+ = error
-            if (exitCode <= 1 && !stdout.isBlank()) {
-                return stdout;
-            } else if (exitCode > 1) {
-                log.warn("Snyk command {} failed with exit code {}: {}", String.join(" ", snykArgs), exitCode, stderr);
+            if (text.isBlank()) {
+                log.warn("Snyk MCP tool {} returned empty response", toolName);
                 return null;
             }
-            return stdout.isBlank() ? null : stdout;
-
+            log.info("Snyk {} scan returned {} chars", label, text.length());
+            return text;
         } catch (Exception e) {
-            log.error("Failed to run snyk command {}: {}", String.join(" ", snykArgs), e.getMessage());
+            log.warn("Snyk MCP tool {} failed: {}", toolName, e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * Converts a Windows path like C:\Users\... or C:/Users/... to Docker-compatible format.
-     * On Linux/Mac this is a no-op.
-     */
-    private String toDockerPath(String path) {
-        // Windows backslash: C:\Users\foo → /c/Users/foo
-        if (path.matches("[A-Za-z]:\\\\.*")) {
-            String drive = path.substring(0, 1).toLowerCase();
-            String rest = path.substring(2).replace("\\", "/");
-            return "/" + drive + rest;
-        }
-        // Windows forward-slash: C:/Users/foo → /c/Users/foo
-        if (path.matches("[A-Za-z]:/.*")) {
-            String drive = path.substring(0, 1).toLowerCase();
-            String rest = path.substring(2);
-            return "/" + drive + rest;
-        }
-        return path.replace("\\", "/");
     }
 }

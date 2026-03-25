@@ -18,9 +18,8 @@ Fix bugs, vulnerabilities, and code smells **locally before creating a PR**, so 
 10. [Pre-Push Git Hook](#pre-push-git-hook)
 11. [Architecture](#architecture)
 12. [Supported LLMs](#supported-llms)
-13. [Snyk Docker Images](#snyk-docker-images)
-14. [Environment Variables](#environment-variables)
-15. [Troubleshooting](#troubleshooting)
+13. [Environment Variables](#environment-variables)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -49,11 +48,11 @@ flowchart TD
     E --> F[SonarQube MCP\nsearch_sonar_issues_in_projects]
     F --> G[Read actual file content\nfor each issue ±2 lines]
     B --> H{runSnykScan?}
-    H -- yes --> I[Docker: snyk/snyk:maven\nsnyk test --json\nsnyk code test --json]
+    H -- yes --> I[Snyk MCP\nsnyk_sca_scan\nsnyk_code_scan → Snyk Cloud]
     H -- no --> J[Skip Snyk]
     G --> K[Build prompt\nissues + real code snippets]
     I --> K
-    K --> L[FallbackLlmService\ntries 13 free models in order]
+    K --> L[FallbackLlmService\ntries 10 OpenRouter free models\n90s timeout per provider]
     L --> M[FixSuggestion array\nfile, line, originalCode, suggestedCode]
     M --> N([Developer reviews fixes])
     N --> O[POST /apply-fixes]
@@ -77,7 +76,7 @@ sequenceDiagram
     participant SC as SonarCloud API
     participant FS as File System
     participant SNK as SnykScanService
-    participant Docker as Docker (snyk/snyk:maven)
+    participant SMCP as Snyk MCP (snyk mcp --disable-trust)
     participant LLM as FallbackLlmService
     participant AFS as AutoFixService
 
@@ -101,10 +100,10 @@ sequenceDiagram
 
     alt runSnykScan = true
         LSS->>SNK: scan(projectPath)
-        SNK->>Docker: docker run snyk/snyk:maven snyk test --json
-        Docker-->>SNK: dependency CVEs JSON
-        SNK->>Docker: docker run snyk/snyk:maven snyk code test --json
-        Docker-->>SNK: SAST issues JSON
+        SNK->>SMCP: callTool("snyk_sca_scan", {path})
+        SMCP-->>SNK: dependency CVE report (from Snyk Cloud)
+        SNK->>SMCP: callTool("snyk_code_scan", {path})
+        SMCP-->>SNK: SAST issues report
         SNK-->>LSS: {dependencyJson, codeJson}
     end
 
@@ -140,46 +139,40 @@ The app never uses paid models without explicit opt-in (`paid: false` in config)
 
 ```mermaid
 flowchart LR
-    Start([chat request]) --> T1
+    Start([chat request\n90s timeout per provider]) --> T1
 
-    subgraph T1 [Tier 1 — OpenRouter Free]
-        A1[nemotron-super-120b] --> A2[arcee-trinity-large]
-        A2 --> A3[nemotron-nano-30b]
-        A3 --> A4[qwen3-coder:free]
-        A4 --> A5[llama-3.3-70b]
-        A5 --> A6[mistral-small-24b]
-        A6 --> A7[gemma-3-27b]
-        A7 --> A8[gemma-3-12b]
-        A8 --> A9[qwen3-next-80b]
+    subgraph T1 [Tier 1 — Faster responders]
+        A1[llama-3.3-70b] --> A2[qwen3-coder:free]
+        A2 --> A3[deepseek-r1]
+        A3 --> A4[mistral-small-24b]
+        A4 --> A5[llama-4-scout]
     end
 
-    T1 -- all rate-limited --> T2
+    T1 -- all rate-limited or timeout --> T2
 
-    subgraph T2 [Tier 2 — Gemini Free]
-        B1[gemini-2.5-flash-lite ✅] --> B2[gemma-3-27b]
-        B2 --> B3[gemma-3-12b]
+    subgraph T2 [Tier 2 — Larger / slower models]
+        B1[gemma-3-27b] --> B2[gemma-3-12b]
+        B2 --> B3[nemotron-super-120b]
+        B3 --> B4[arcee-trinity-large]
+        B4 --> B5[nemotron-nano-30b]
     end
 
-    T2 -- exhausted --> T3
+    T2 -- exhausted --> Err([RuntimeException\nAll free providers exhausted\nWait for quota reset])
 
-    subgraph T3 [Tier 3 — xAI Grok]
-        C1[grok-3-mini]
-    end
-
-    T3 -- exhausted --> Err([RuntimeException\nAll free providers exhausted])
-
-    T1 -- success --> Resp([LLM response])
+    T1 -- success --> Resp([LLM response ✅])
     T2 -- success --> Resp
-    T3 -- success --> Resp
 
-    style B1 fill:#d4edda,stroke:#28a745
+    style Resp fill:#d4edda,stroke:#28a745
     style Err fill:#f8d7da,stroke:#dc3545
 ```
 
+**All 10 providers use a single `OPENROUTER_API_KEY` environment variable.**
+
 **On each failure:**
 - HTTP 429 / rate-limited → log warning, try next
-- HTTP 402 / payment required → log warning, try next
-- Any other error → log warning, try next
+- HTTP 402 / payment required → log warning, skip
+- 90-second timeout → `⏱️ Timeout` log, try next
+- Empty / `null` response → `Empty/null response` log, try next
 - `paid: true` entries → skipped silently (never called)
 
 ---
@@ -221,11 +214,33 @@ flowchart TD
 
 ### Prerequisites
 
-- Java 17+ on PATH
-- Docker Desktop running (`docker ps` should work)
+- **Java 17+** on PATH
+- **Node.js + npm** on PATH (`node --version` should work)
+- **Snyk CLI** installed globally: `npm install -g snyk` (v1.1298.0+)
+- **Docker Desktop** running — needed for the SonarQube MCP server (`docker ps` should work)
+- **`OPENROUTER_API_KEY`** environment variable set
 - Your project already analysed in SonarCloud at least once
 
-### 1. Clone and Build
+### 1. Install Snyk CLI globally (once per machine)
+
+```bash
+npm install -g snyk
+snyk --version   # must be 1.1298.0 or later
+```
+
+### 2. Set OpenRouter API key
+
+```bash
+# Linux / Mac / Git Bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+
+# Windows — persists across sessions
+setx OPENROUTER_API_KEY "sk-or-v1-..."
+```
+
+Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys). Restart your terminal after `setx`.
+
+### 3. Clone and Build
 
 ```bash
 git clone <repo-url>
@@ -233,27 +248,67 @@ cd LocalDevScanMcpDemo
 ./gradlew bootJar
 ```
 
-### 2. Start the Server
+### 4. Configure `application.yaml`
 
-```bash
-MSYS_NO_PATHCONV=1 java -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
+Edit `src/main/resources/application.yaml` — only the `scan` section needs to change per project:
+
+```yaml
+scan:
+  project-path: C:/path/to/your/project      # ← absolute path to the project to scan
+  sonar-project-key: your-org_your-project   # ← SonarCloud project key
+  branch: main
+  run-sonar-scan: false   # set true to trigger mvn sonar:sonar first
+  run-snyk-scan: true
 ```
 
-> **Windows Git Bash:** `MSYS_NO_PATHCONV=1` prevents Git Bash from converting `/chat/completions` to a Windows path.
->
-> **Port conflict:** If port 8080 is busy: `java -Dserver.port=8081 -jar ...`
+Also set your SonarCloud and Snyk credentials once:
 
-Or use the provided scripts:
+```yaml
+sonarqube:
+  token: <your-sonarcloud-token>
+  org: <your-sonarcloud-org>
+
+snyk:
+  token: <your-snyk-token>    # from app.snyk.io/account
+  org-id: <your-snyk-org-slug>  # e.g. vivid-vortex
+```
+
+### 5. Start the Server
 
 ```bash
 # Linux / Mac / Git Bash
-./run.sh
+MSYS_NO_PATHCONV=1 java -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
 
 # Windows CMD
 run.bat
 ```
 
-### 3. Scan Your Project
+> **Startup time:** ~20 seconds — wait for both:
+> ```
+> SonarQube MCP client ready
+> Snyk MCP client ready — 11 tool(s) available
+> ```
+>
+> **Port conflict:** If port 8080 is busy: `java -Dserver.port=8081 -jar ...`
+
+### 6. Verify Config
+
+```bash
+curl http://localhost:8080/scan-config
+```
+
+Confirm `projectPath`, `sonarProjectKey`, and `snykEnabled` look correct.
+
+### 7. Scan Your Project
+
+```bash
+# Uses all defaults from application.yaml
+curl -X POST http://localhost:8080/scan-local \
+  -H "Content-Type: application/json" \
+  -d "{}"
+```
+
+Or override specific fields:
 
 ```bash
 curl -X POST http://localhost:8080/scan-local \
@@ -267,7 +322,9 @@ curl -X POST http://localhost:8080/scan-local \
   }'
 ```
 
-### 4. Apply Fixes
+**Response:** JSON with `totalIssues` and a `fixes` array — each entry has `file`, `startLine`, `severity`, `originalCode`, `suggestedCode`, `explanation`.
+
+### 8. Apply Fixes
 
 ```bash
 curl -X POST http://localhost:8080/apply-fixes \
@@ -275,11 +332,12 @@ curl -X POST http://localhost:8080/apply-fixes \
   -d '{
     "projectPath": "C:/path/to/your/project",
     "sonarProjectKey": "your-org_your-project",
-    "branch": "main",
     "rescanAfterApply": true,
-    "fixes": [ ... paste fixes from scan response ... ]
+    "fixes": [ ... paste fixes array from scan response ... ]
   }'
 ```
+
+After this runs, check the patched files with `git diff` in your project directory. Original files are backed up as `.bak`.
 
 ---
 
@@ -293,13 +351,37 @@ Everything needed to run the app is inside the repository — no environment var
 # Java 17+ required
 java -version
 
-# Docker Desktop must be running
+# Node.js + npm required (for Snyk CLI)
+node --version
+npm --version
+
+# Install Snyk CLI globally (one-time, v1.1298.0+ required for MCP support)
+npm install -g snyk
+snyk --version   # should print 1.1298.0 or later
+
+# Docker Desktop must be running (for SonarQube MCP)
 docker --version
 docker ps        # should list containers with no error
 ```
 
-- Java 17+ → download from [adoptium.net](https://adoptium.net)
-- Docker Desktop → download from [docker.com](https://www.docker.com/products/docker-desktop)
+- Java 17+ → [adoptium.net](https://adoptium.net)
+- Node.js → [nodejs.org](https://nodejs.org) (LTS version recommended)
+- Docker Desktop → [docker.com](https://www.docker.com/products/docker-desktop)
+
+### Step 1b — Set OpenRouter API key
+
+All 10 LLM providers use a single OpenRouter key. Set it once as an environment variable:
+
+```bash
+# Linux / Mac
+export OPENROUTER_API_KEY=sk-or-v1-...
+
+# Windows (persists across sessions)
+setx OPENROUTER_API_KEY "sk-or-v1-..."
+# Then open a new terminal for setx to take effect
+```
+
+Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
 ### Step 2 — Clone this repo
 
@@ -320,7 +402,7 @@ git checkout feature/your-branch
 
 ### Step 4 — Update `application.yaml`
 
-Open `src/main/resources/application.yaml` and change **only the `scan` section**. Everything else (tokens, API keys, LLM providers) is already embedded.
+Open `src/main/resources/application.yaml` and change **only the `scan` section**. Everything else (SonarCloud token, Snyk token, LLM providers) is already set.
 
 ```yaml
 scan:
@@ -328,12 +410,12 @@ scan:
   sonar-project-key: your-sonarcloud-key        # find in SonarCloud → Project Information
   branch: feature/your-branch                   # branch you checked out above
   run-sonar-scan: false                         # false = use existing SonarCloud results
-  run-snyk-scan: true                           # requires Docker to be running
+  run-snyk-scan: true                           # true = call snyk_sca_scan + snyk_code_scan
 ```
 
 > **Finding your SonarCloud project key:** Log in to [sonarcloud.io](https://sonarcloud.io) → open your project → **Project Information** (bottom left) → copy the **Project Key**.
 
-> **No pom.xml / build file?** Set `run-snyk-scan: false` — Snyk needs a build manifest to scan dependencies.
+> **No pom.xml / build file?** Set `run-snyk-scan: false` — Snyk needs a dependency manifest to scan.
 
 ### Step 5 — Build and start the server
 
@@ -349,10 +431,14 @@ run.bat
 java -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
 ```
 
-Wait for this line in the console:
+Wait for these lines in the console (both MCP clients must initialize):
 ```
+SonarQube MCP client ready — N tool(s) available
+Snyk MCP client ready — 11 tool(s) available
 Started Application in XX seconds
 ```
+
+Typical startup: **15–25 seconds** (SonarQube Docker + Snyk CLI both initializing).
 
 ### Step 6 — Verify config
 
@@ -370,7 +456,12 @@ curl -X POST http://localhost:8080/scan-local \
   -d "{}"
 ```
 
-Empty body `{}` — all values come from `application.yaml`. The scan takes **2–4 minutes** on first run (Snyk pulls its Docker image ~500 MB).
+Empty body `{}` — all values come from `application.yaml`.
+
+Typical scan times:
+- **SonarQube MCP** — 2–5 seconds (fetches from SonarCloud)
+- **Snyk MCP** — 5–15 seconds (Snyk CLI reads files + queries Snyk Cloud; no Docker pull needed)
+- **LLM** — 30s–3min depending on which OpenRouter model responds first
 
 ### Step 8 — Apply fixes
 
@@ -391,14 +482,20 @@ curl -X POST http://localhost:8080/apply-fixes \
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `docker ps` fails | Docker Desktop not running | Start Docker Desktop, wait for the whale icon to stop animating |
+| Server won't start — `snyk: command not found` | Snyk CLI not installed | Run `npm install -g snyk`, then restart server |
+| Server won't start — `Snyk MCP client ready — 0 tools` | Snyk CLI older than v1.1298.0 (no MCP support) | Run `npm install -g snyk@latest` |
+| Server won't start — Docker error | Docker Desktop not running | Start Docker Desktop, wait for whale icon to stop animating |
 | Port 8080 busy | Another process using 8080 | Start with `java -Dserver.port=8081 -jar ...` and use port 8081 in all curl calls |
-| `projectPath is required` error | `scan.project-path` missing or blank in YAML | Check `application.yaml` — path must be absolute and use forward slashes |
-| `sonarProjectKey is required` error | `scan.sonar-project-key` blank in YAML | Find the key in SonarCloud → Project Information |
-| All LLM providers exhausted | Daily free quota used up | Wait 1–2 hours for quota reset. Gemini resets at midnight Pacific. Activate xAI Grok free tier at `console.x.ai` for an extra fallback |
-| Snyk takes very long on first run | Docker pulling `snyk/snyk:maven` image (~500 MB) | Run `docker pull snyk/snyk:maven` before starting the app to pre-download |
-| Snyk `code test` fails (exit 2) | Snyk Code not enabled on free account | Enable it: [app.snyk.io](https://app.snyk.io) → Settings → Snyk Code → toggle On. Dependency scan still works. |
-| Wrong project scanned | Old Docker image cached with old JAR | Rebuild: `./gradlew bootJar`, then restart |
+| `projectPath is required` | `scan.project-path` blank in YAML | Check `application.yaml` — path must be absolute with forward slashes |
+| `sonarProjectKey is required` | `scan.sonar-project-key` blank in YAML | Find key in SonarCloud → Project Information |
+| All LLM providers exhausted | OpenRouter free quota used up | Wait 10–30 min for per-minute rate limits to reset. The app will retry automatically on next scan. |
+| LLM provider takes 3+ minutes | Slow OpenRouter model (nemotron, arcee) | Normal — these hit the 90s timeout and the chain moves on. Tier 1 models (llama, qwen, deepseek) are faster. |
+| `OPENROUTER_API_KEY` not found | Env var not set or set with `setx` but terminal not restarted | On Windows, open a new terminal after `setx`. Or start server with: `OPENROUTER_API_KEY=sk-or-v1-... java -jar ...` |
+| Snyk `snyk_sca_scan` returns auth error | Snyk token expired (UAT tokens expire in 90 days) | Regenerate token at [app.snyk.io/account](https://app.snyk.io/account), update `snyk.token` in YAML |
+| Snyk `snyk_code_scan` fails | Snyk Code not enabled on account | [app.snyk.io](https://app.snyk.io) → Settings → Snyk Code → toggle On. Dependency scan still works. |
+| Snyk returns "No manifest files" | No `pom.xml` / `build.gradle` on scanned branch | Set `run-snyk-scan: false` for branches without build files |
+| `originalCode not found` when applying fixes | LLM paraphrased code slightly | Re-run `/scan-local` to get fresh `originalCode` from current file. Always use fixes exactly as returned. |
+| Wrong project being scanned | Stale YAML values | Run `GET /scan-config` to verify loaded values. Save `application.yaml` and restart server. |
 
 ---
 
@@ -412,16 +509,11 @@ scan:
   sonar-project-key: new-sonarcloud-key          # ← change
   branch: feature/new-branch                     # ← change
   run-sonar-scan: false                          # true = run mvn sonar:sonar first (~2 min)
-  run-snyk-scan: true                            # false = skip Snyk (no Docker needed)
+  run-snyk-scan: true                            # false = skip if no pom.xml / build file
   maven-executable: mvn                          # or ./mvnw if project uses wrapper
 ```
 
-**If project type is not Maven**, also change the Snyk Docker image:
-
-```yaml
-snyk:
-  docker-image: snyk/snyk:gradle    # gradle | node | python | ruby | dotnet
-```
+> **Snyk MCP automatically detects the project type** (Maven, Gradle, Node, Python) from the manifest files in the project directory — no image configuration needed.
 
 After saving, restart the server and call `GET /scan-config` to confirm the new values loaded. Then run `POST /scan-local` with an empty body `{}`.
 
@@ -582,34 +674,36 @@ flowchart TB
     subgraph LocalDevScanMcpDemo [LocalDevScanMcpDemo — Spring Boot 4.0]
         LSC[LocalScanController\nREST endpoints]
         LSS[LocalScanService\norchestration]
-        FLS[FallbackLlmService\n13-provider chain]
-        SNK[SnykScanService\nDocker runner]
+        FLS[FallbackLlmService\n10-provider chain\n90s timeout each]
+        SNK[SnykScanService\nSnyk MCP client]
         AFS[AutoFixService\nfile patcher]
-        MCP[McpSyncClient\nSonarQube MCP]
+        SQMCP[McpSyncClient\nSonarQube MCP]
+        SNKMCP[McpSyncClient\nSnyk MCP]
         LLP[LlmProperties\nllm.providers config]
     end
 
     subgraph External
         SC[SonarCloud API]
-        OR[OpenRouter\nfree models]
-        GEM[Google Gemini API\ngemini-2.5-flash-lite]
-        XAI[xAI Grok API\ngrok-3-mini]
-        Docker[Docker\nsnyk/snyk:maven]
+        SnykCloud[Snyk Cloud\nvulnerability DB]
+        OR[OpenRouter\n10 free models]
+        DockerSQ[Docker\nmcp/sonarqube]
+        SnykCLI[Snyk CLI\nsnyk mcp --disable-trust]
     end
 
     Dev --> LSC
     Hook --> LSC
     LSC --> LSS
     LSC --> AFS
-    LSS --> MCP
+    LSS --> SQMCP
     LSS --> SNK
     LSS --> FLS
-    MCP --> SC
-    SNK --> Docker
+    SNK --> SNKMCP
+    SQMCP --> DockerSQ
+    DockerSQ --> SC
+    SNKMCP --> SnykCLI
+    SnykCLI --> SnykCloud
     FLS --> LLP
     FLS --> OR
-    FLS --> GEM
-    FLS --> XAI
     AFS --> LSS
 ```
 
@@ -618,9 +712,12 @@ flowchart TB
 | Decision | Reason |
 |----------|--------|
 | `McpSyncClient.callTool()` directly (no LLM tool-calling) | Reliable, no hallucination of tool arguments |
+| Two separate MCP clients (SonarQube + Snyk) | Each initializes once at boot; scans reuse the running process — no per-scan Docker overhead |
+| `snyk mcp -t stdio --disable-trust` | `--disable-trust` prevents the browser-confirmation prompt that blocks headless operation |
 | Read actual file content ±2 lines per issue | LLM sees real code → accurate `originalCode` (no hallucination) |
-| RestTemplate fallback chain (not Spring AI `ChatClient`) | Fine-grained control over provider switching on 429/402 |
+| `java.net.http.HttpClient` with 90s total timeout | Replaces `RestTemplate` + `SimpleClientHttpRequestFactory`; timeout covers entire request including streaming |
 | `paid: true` flag in config | Prevents accidental paid API usage; explicit opt-in per provider |
+| `${OPENROUTER_API_KEY}` env var (not hardcoded) | Prevents API key leaks via git commits |
 | `.bak` backup before patching | Safe rollback without git |
 | `textRange.startLine` over top-level `line` | SonarCloud MCP returns line in `textRange`, not root field |
 
@@ -628,15 +725,15 @@ flowchart TB
 
 ## Supported LLMs
 
-Any OpenAI-compatible API works. Configure in `application.yaml` under `llm.providers`:
+All 10 configured providers use OpenRouter's free tier. Any OpenAI-compatible API can be added:
 
-| Provider | Base URL | Example Models |
-|----------|----------|----------------|
-| **OpenRouter** (free tier) | `https://openrouter.ai/api/v1` | `nvidia/nemotron-3-super-120b-a12b:free`, `meta-llama/llama-3.3-70b-instruct:free` |
-| **Gemini** (recommended fallback) | `https://generativelanguage.googleapis.com/v1beta/openai` | `models/gemini-2.5-flash-lite` |
-| **xAI Grok** | `https://api.x.ai/v1` | `grok-3-mini` (activate at console.x.ai first) |
-| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| **Azure OpenAI** | your Azure endpoint | deployment name |
+| Provider | Base URL | Example Free Models |
+|----------|----------|---------------------|
+| **OpenRouter** (all 10 configured) | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free`, `qwen/qwen3-coder:free`, `deepseek/deepseek-r1:free` |
+| **OpenAI** (add if needed) | `https://api.openai.com/v1` | `gpt-4o-mini` (set `paid: true`) |
+| **Azure OpenAI** (add if needed) | your Azure endpoint | deployment name |
+
+All current providers use `api-key: ${OPENROUTER_API_KEY}` — set this env var and all 10 are ready.
 
 **Adding a new provider:**
 
@@ -645,7 +742,7 @@ llm:
   providers:
     - name: my-provider
       base-url: https://api.example.com/v1
-      api-key: your-api-key
+      api-key: ${MY_API_KEY}           # use env var to avoid committing keys
       completions-path: /chat/completions
       model: my-model-name
       paid: false   # set true to exclude from automatic use
@@ -653,33 +750,14 @@ llm:
 
 ---
 
-## Snyk Docker Images
-
-| Project Type | Docker Image | Set in config |
-|-------------|-------------|---------------|
-| **Maven (Java)** | `snyk/snyk:maven` | default |
-| Gradle (Java) | `snyk/snyk:gradle` | `snyk.docker-image: snyk/snyk:gradle` |
-| Node.js | `snyk/snyk:node` | `snyk.docker-image: snyk/snyk:node` |
-| Python | `snyk/snyk:python` | `snyk.docker-image: snyk/snyk:python` |
-
-> **Important:** Do NOT use `snyk/snyk:node` for Java projects — it has no Maven and will fail with `spawn mvn ENOENT`.
-
----
-
 ## Environment Variables
 
-All credentials are embedded in `application.yaml` for easy cloning. These environment variables override YAML values if set:
-
-| Variable | YAML key | Description |
+| Variable | Required | Description |
 |----------|----------|-------------|
-| `SONARQUBE_TOKEN` | `sonarqube.token` | SonarCloud user token |
-| `SONARQUBE_URL` | `sonarqube.url` | SonarCloud URL |
-| `SONARQUBE_ORG` | `sonarqube.org` | SonarCloud organization key |
-| `SNYK_TOKEN` | `snyk.token` | Snyk API token |
-| `SNYK_DOCKER_IMAGE` | `snyk.docker-image` | Default: `snyk/snyk:maven` |
-| `OPENAI_API_KEY` | `spring.ai.openai.api-key` | For Spring AI ChatController endpoints |
-| `OPENAI_BASE_URL` | `spring.ai.openai.base-url` | For Spring AI ChatController endpoints |
-| `MSYS_NO_PATHCONV` | — | Set to `1` in Git Bash to prevent path conversion |
+| `OPENROUTER_API_KEY` | **Required** | All 10 LLM providers use this single key. Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys). Set with `setx OPENROUTER_API_KEY "sk-or-v1-..."` on Windows. |
+| `MSYS_NO_PATHCONV` | Git Bash only | Set to `1` to prevent Git Bash from converting `/chat/completions` to a Windows path. Already set in `run.sh`. |
+
+All other credentials (SonarCloud token, Snyk token, org IDs) are embedded in `application.yaml`. No other environment variables are required.
 
 ---
 
@@ -692,6 +770,16 @@ java -Dserver.port=8081 -jar build/libs/LocalDevScanMcpDemo-0.0.1-SNAPSHOT.jar
 
 # Then use port 8081 in all curl calls
 curl http://localhost:8081/scan-config
+```
+
+### Server won't start — Snyk CLI not found
+```
+Error: SonarQube / Snyk MCP client initialization failed
+```
+Either `snyk` is not installed, or the Snyk CLI version is too old. Fix:
+```bash
+npm install -g snyk@latest
+snyk --version    # should be 1.1298.0+
 ```
 
 ### Server won't start — Docker not running
@@ -707,30 +795,29 @@ curl http://localhost:8080/scan-config   # shows what's actually loaded
 ```
 
 ### All LLM providers exhausted
-Free tier quotas are shared and reset on a schedule:
-- **OpenRouter** — per-minute rate limit, resets quickly but shared across all users
-- **Gemini** — 20 requests/day, resets at midnight Pacific Time
-- **xAI Grok** — activate free tier at [console.x.ai](https://console.x.ai) for an additional fallback
-
-While waiting for reset, you can check which providers are available by looking at the server logs:
+OpenRouter free tier uses per-minute rate limits shared across all users. When all 10 providers hit their rate limit:
 ```
-Trying LLM provider: gemini-flash-lite ...
-⚠ Rate-limited on gemini-flash-lite (HTTP 429), trying next...
+RuntimeException: All free LLM providers exhausted. Tried: llama-3.3-70b, qwen3-coder-free, ...
 ```
+Wait 10–30 minutes for the per-minute limits to reset, then retry. The rate limits reset quickly (not daily).
 
-### Snyk scan takes 5+ minutes on first run
-Docker is pulling the `snyk/snyk:maven` image (~500 MB). Pre-download it before starting the app:
-```bash
-docker pull snyk/snyk:maven
+While waiting, check the server logs to see which providers were tried:
+```
+⚠ Rate-limited on llama-3.3-70b, trying next...
+⏱️  Timeout (90s) on arcee-trinity-large, trying next...
+✅ Got response from provider: deepseek-r1
 ```
 
-### Snyk `code test` exits with code 2
-Snyk Code (SAST) requires enabling in your Snyk account:
+### Snyk scan slow on first run after installing
+On the first run after installing or upgrading the Snyk CLI, the CLI performs a background update check. Subsequent runs are faster. This is expected and normal.
+
+### Snyk `snyk_code_scan` fails or returns empty
+Snyk Code (SAST) requires enabling in your account:
 1. Log in to [app.snyk.io](https://app.snyk.io)
 2. Go to **Settings → Snyk Code**
 3. Toggle **Enable Snyk Code** → On
 
-Dependency scanning (`snyk test`) continues to work regardless.
+Dependency scanning (`snyk_sca_scan`) continues to work regardless.
 
 ### `originalCode not found` when applying fixes
 The LLM's `originalCode` doesn't exactly match the file content. This happens when:

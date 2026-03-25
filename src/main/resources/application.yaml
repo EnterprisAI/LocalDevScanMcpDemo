@@ -55,9 +55,8 @@ sonarqube:
   org: vivid-vortex-devops
 
 snyk:
-  token: a23d51f8-8a0b-4a46-9b9a-16df80ceacf7
-  org-id: 2e7e4f17-2aa2-436a-a58f-b3646cb5de15
-  docker-image: snyk/snyk:maven
+  token: snyk_uat.1fcad39e.eyJlIjoxNzgyMDMxOTQzLCJoIjoic255ay5pbyIsImoiOiJBWjBaNVkybWhtRVdiT2FzMHdyUU1RIiwicyI6InVOS0M5dm1YUnptTGJHdG1pQ3BseXciLCJ0aWQiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIn0.0ktcVWppV-aaMdcewAo-cjcpz_65I5uj_-uKKmk-ZPgntHy_FgFXAsuBiR7omitVsp26nFIx4lkaPGQipaPhBg
+  org-id: vivid-vortex
 
 github:
   token: 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
