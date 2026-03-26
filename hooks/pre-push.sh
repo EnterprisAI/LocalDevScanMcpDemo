@@ -13,6 +13,15 @@
 
 MCP_SERVER="${MCP_SERVER_URL:-http://localhost:8080}"
 PROJECT_PATH="$(pwd)"
+
+# Convert Git Bash Unix-style path (/c/temp/...) to Windows path (C:/temp/...)
+# so that the Java server can open files with Paths.get(projectPath, ...)
+if [[ "$PROJECT_PATH" =~ ^/([a-zA-Z])/(.*) ]]; then
+    DRIVE="${BASH_REMATCH[1]}"
+    REST="${BASH_REMATCH[2]}"
+    PROJECT_PATH="${DRIVE^^}:/${REST}"
+fi
+
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-$(basename "$PROJECT_PATH")}"
 RESULTS_FILE="/tmp/scan-results-$$.json"
